@@ -9,10 +9,11 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
+import requests as http_requests
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from PIL import Image
-import instaloader
+from apify_client import ApifyClient
 from ultralytics import YOLO
 import easyocr
 
@@ -24,13 +25,8 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 DURA_DIR = DOWNLOADS_DIR / "dura_bulk"
 NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
 
-# Session files directory
-SESSIONS_DIR = BASE_DIR / "sessions"
-SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-
-# Default shared Instagram credentials (set via Render environment variables)
-DEFAULT_IG_USERNAME = os.environ.get("IG_USERNAME", "")
-DEFAULT_IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
+# Apify API token (set via Render environment variables)
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 
 # Ensure output dirs exist
 DURA_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,119 +67,109 @@ def fuzzy_match_dura_bulk(text):
     return False
 
 
-def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False, ig_username="", ig_password="", use_session=False):
-    """Background pipeline: scrape profile/hashtag → detect boats → OCR → sort."""
+def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False):
+    """Background pipeline: scrape via Apify → detect boats → OCR → sort."""
     job = jobs[job_id]
 
     try:
-        # --- Step 1: Scrape ---
+        # --- Step 1: Scrape via Apify ---
         job["step"] = "scraping"
         label = f"#{name}" if is_hashtag else f"@{name}"
-        job["detail"] = f"Fetching posts from {label}..."
+        job["detail"] = f"Fetching posts from {label} via Apify..."
+
+        if not APIFY_TOKEN:
+            job["step"] = "error"
+            job["detail"] = "Apify API token not configured. Set APIFY_TOKEN env var."
+            return
 
         tmp_dir = tempfile.mkdtemp(prefix="dura_bulk_")
-        L = instaloader.Instaloader(
-            download_videos=False,
-            download_video_thumbnails=False,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            compress_json=False,
-            post_metadata_txt_pattern="",
-        )
+        client = ApifyClient(APIFY_TOKEN)
 
-        # Authenticate: session file or username/password
-        if use_session and ig_username:
-            session_path = SESSIONS_DIR / f"session-{ig_username}"
-            if session_path.exists():
-                try:
-                    job["detail"] = f"Loading session for @{ig_username}..."
-                    L.load_session_from_file(ig_username, str(session_path))
-                    job["detail"] = f"Session loaded. Fetching posts from {label}..."
-                except Exception as e:
-                    job["step"] = "error"
-                    job["detail"] = f"Session file invalid or expired: {e}"
-                    return
-            else:
-                job["step"] = "error"
-                job["detail"] = f"No session file found for @{ig_username}. Please upload one."
-                return
-        elif ig_username and ig_password:
-            # Try cached session first to avoid repeated logins
-            cached_session = SESSIONS_DIR / f"session-{ig_username}"
-            if cached_session.exists():
-                try:
-                    job["detail"] = f"Loading cached session for @{ig_username}..."
-                    L.load_session_from_file(ig_username, str(cached_session))
-                    job["detail"] = f"Session loaded. Fetching posts from {label}..."
-                except Exception:
-                    # Cached session failed, fall through to fresh login
-                    pass
-            if not L.context.is_logged_in:
-                try:
-                    job["detail"] = f"Logging in as @{ig_username}..."
-                    L.login(ig_username, ig_password)
-                    # Save session for future requests
-                    try:
-                        L.save_session_to_file(str(cached_session))
-                    except Exception:
-                        pass
-                    job["detail"] = f"Logged in. Fetching posts from {label}..."
-                except Exception as e:
-                    job["step"] = "error"
-                    job["detail"] = f"Instagram login failed: {e}"
-                    return
+        # Use the Instagram Scraper actor
+        run_input = {
+            "resultsLimit": max_posts,
+        }
 
+        if is_hashtag:
+            run_input["directUrls"] = [f"https://www.instagram.com/explore/tags/{name}/"]
+            run_input["resultsType"] = "posts"
+        else:
+            run_input["directUrls"] = [f"https://www.instagram.com/{name}/"]
+            run_input["resultsType"] = "posts"
+
+        job["detail"] = f"Running Apify scraper for {label}... (this may take a minute)"
+        job["total"] = max_posts
+        job["current"] = 0
+
+        try:
+            run = client.actor("apify/instagram-scraper").call(run_input=run_input)
+        except Exception as e:
+            job["step"] = "error"
+            job["detail"] = f"Apify scraper failed: {e}"
+            return
+
+        # Download images from results
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
         image_paths = []
-        job["total"] = max_posts
-        job["current"] = 0
-        try:
-            if is_hashtag:
-                posts = instaloader.Hashtag.from_name(L.context, name).get_posts()
-            else:
-                profile = instaloader.Profile.from_username(L.context, name)
-                posts = profile.get_posts()
+        count = 0
 
-            count = 0
-            skipped = 0
-            for post in posts:
-                if count >= max_posts:
-                    break
-                post_date = post.date_utc
-                if post_date.date() > end_dt.date():
-                    skipped += 1
-                    job["detail"] = f"Scanning posts from {label}... ({skipped} skipped, {count} downloaded)"
-                    continue
-                if post_date.date() < start_dt.date():
-                    break
+        job["detail"] = f"Downloading images from {label}..."
 
-                if post.is_video:
-                    continue
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            if count >= max_posts:
+                break
 
-                filename = f"{post.date_utc.strftime('%Y%m%d_%H%M%S')}_{post.shortcode}.jpg"
-                filepath = os.path.join(tmp_dir, filename)
-
+            # Filter by date if timestamp available
+            timestamp = item.get("timestamp")
+            if timestamp:
                 try:
-                    L.download_pic(filepath, post.url, post.date_utc)
-                    # download_pic may append extension
-                    if os.path.exists(filepath):
-                        image_paths.append(Path(filepath))
-                    elif os.path.exists(filepath + ".jpg"):
-                        shutil.move(filepath + ".jpg", filepath)
-                        image_paths.append(Path(filepath))
+                    post_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date()
+                    if post_date > end_dt.date() or post_date < start_dt.date():
+                        continue
+                except Exception:
+                    pass
+
+            # Skip videos
+            if item.get("type") == "Video":
+                continue
+
+            # Get image URL
+            image_url = item.get("displayUrl") or item.get("imageUrl") or ""
+            if not image_url:
+                # Try first image in carousel
+                images = item.get("images") or []
+                if images:
+                    image_url = images[0] if isinstance(images[0], str) else images[0].get("url", "")
+
+            if not image_url:
+                continue
+
+            # Build filename: YYYYMMDD_profilename_NNN.jpg
+            date_prefix = ""
+            if timestamp:
+                try:
+                    post_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    date_prefix = post_dt.strftime("%Y%m%d")
+                except Exception:
+                    pass
+            if not date_prefix:
+                date_prefix = "nodate"
+            filename = f"{date_prefix}_{name}_{count:03d}.jpg"
+            filepath = os.path.join(tmp_dir, filename)
+
+            try:
+                resp = http_requests.get(image_url, timeout=30)
+                if resp.status_code == 200:
+                    with open(filepath, "wb") as f:
+                        f.write(resp.content)
+                    image_paths.append(Path(filepath))
                     count += 1
                     job["current"] = count
-                    job["detail"] = f"Downloading from {label}: {count} of ~{max_posts} images..."
-                except Exception:
-                    continue
-
-        except Exception as e:
-            job["step"] = "error"
-            job["detail"] = f"Scrape error: {e}"
-            return
+                    job["detail"] = f"Downloading from {label}: {count} images..."
+            except Exception:
+                continue
 
         job["total"] = len(image_paths)
         job["current"] = 0
@@ -375,22 +361,6 @@ def index():
     return send_file("index.html")
 
 
-@app.route("/api/upload-session", methods=["POST"])
-def upload_session():
-    """Receive an instaloader session file upload."""
-    username = request.form.get("username", "").strip()
-    session_file = request.files.get("session_file")
-
-    if not username or not session_file:
-        return jsonify({"error": "Username and session file are required"}), 400
-
-    # Save session file
-    session_path = SESSIONS_DIR / f"session-{username}"
-    session_file.save(str(session_path))
-
-    return jsonify({"ok": True, "username": username})
-
-
 @app.route("/api/scrape", methods=["POST"])
 def start_scrape():
     data = request.json
@@ -398,9 +368,6 @@ def start_scrape():
     start_date = data.get("start_date", "")
     end_date = data.get("end_date", "")
     max_posts = int(data.get("max_posts", 100))
-    ig_username = data.get("ig_username", "").strip()
-    ig_password = data.get("ig_password", "")
-    use_session = data.get("use_session", False)
 
     if not raw_input or not start_date or not end_date:
         return jsonify({"error": "Missing required fields"}), 400
@@ -411,20 +378,6 @@ def start_scrape():
 
     if not name:
         return jsonify({"error": "Missing required fields"}), 400
-
-    # Auto-use default shared credentials if no login provided
-    if not use_session and not ig_password:
-        # First try session file on disk
-        default_session = SESSIONS_DIR / f"session-{DEFAULT_IG_USERNAME}" if DEFAULT_IG_USERNAME else None
-        if default_session and default_session.exists():
-            use_session = True
-            ig_username = DEFAULT_IG_USERNAME
-        # Then try env var credentials
-        elif DEFAULT_IG_USERNAME and DEFAULT_IG_PASSWORD:
-            ig_username = DEFAULT_IG_USERNAME
-            ig_password = DEFAULT_IG_PASSWORD
-        elif is_hashtag:
-            return jsonify({"error": "No Instagram credentials configured. Contact the admin or use your own login."}), 400
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
@@ -437,7 +390,7 @@ def start_scrape():
 
     thread = threading.Thread(
         target=run_pipeline,
-        args=(job_id, name, start_date, end_date, max_posts, is_hashtag, ig_username, ig_password, use_session),
+        args=(job_id, name, start_date, end_date, max_posts, is_hashtag),
     )
     thread.daemon = True
     thread.start()

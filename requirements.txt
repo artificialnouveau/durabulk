@@ -4,7 +4,8 @@ torchvision --index-url https://download.pytorch.org/whl/cpu
 flask
 flask-cors
 gunicorn
-instaloader
+apify-client
+requests
 ultralytics
 easyocr
 pillow
