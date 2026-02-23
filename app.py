@@ -117,9 +117,20 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
 
         job["detail"] = f"Downloading images from {label}..."
 
+        items_seen = 0
+        skipped_date = 0
+        skipped_video = 0
+        skipped_no_url = 0
+
         for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            items_seen += 1
             if count >= max_posts:
                 break
+
+            # Log first item's keys for debugging
+            if items_seen == 1:
+                print(f"[DEBUG] First item keys: {list(item.keys())}", flush=True)
+                print(f"[DEBUG] First item type: {item.get('type')}", flush=True)
 
             # Filter by date if timestamp available
             timestamp = item.get("timestamp")
@@ -127,23 +138,38 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 try:
                     post_date = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).date()
                     if post_date > end_dt.date() or post_date < start_dt.date():
+                        skipped_date += 1
                         continue
                 except Exception:
                     pass
 
             # Skip videos
             if item.get("type") == "Video":
+                skipped_video += 1
                 continue
 
-            # Get image URL
-            image_url = item.get("displayUrl") or item.get("imageUrl") or ""
+            # Get image URL — try multiple field names used by different Apify actors
+            image_url = (
+                item.get("displayUrl")
+                or item.get("imageUrl")
+                or item.get("url")
+                or item.get("display_url")
+                or ""
+            )
             if not image_url:
                 # Try first image in carousel
-                images = item.get("images") or []
+                images = item.get("images") or item.get("childPosts") or []
                 if images:
-                    image_url = images[0] if isinstance(images[0], str) else images[0].get("url", "")
+                    first = images[0]
+                    if isinstance(first, str):
+                        image_url = first
+                    elif isinstance(first, dict):
+                        image_url = first.get("url", "") or first.get("displayUrl", "") or first.get("imageUrl", "")
 
             if not image_url:
+                skipped_no_url += 1
+                if items_seen <= 3:
+                    print(f"[DEBUG] Item {items_seen} has no image URL. Keys: {list(item.keys())}", flush=True)
                 continue
 
             # Build filename: YYYYMMDD_profilename_NNN.jpg
@@ -170,6 +196,8 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                     job["detail"] = f"Downloading from {label}: {count} images..."
             except Exception:
                 continue
+
+        print(f"[DEBUG] Items seen: {items_seen}, downloaded: {count}, skipped_date: {skipped_date}, skipped_video: {skipped_video}, skipped_no_url: {skipped_no_url}", flush=True)
 
         job["total"] = len(image_paths)
         job["current"] = 0
