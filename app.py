@@ -303,7 +303,7 @@ def run_upload_pipeline(job_id, tmp_dir):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return send_file("index.html")
 
 
 @app.route("/api/scrape", methods=["POST"])
