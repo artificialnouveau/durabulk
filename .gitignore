@@ -1,0 +1,5 @@
+images/
+downloads/
+__pycache__/
+*.pyc
+.DS_Store

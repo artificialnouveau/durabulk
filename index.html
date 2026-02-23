@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dura Bulk Detector</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1117;
+    color: #e0e0e0;
+    min-height: 100vh;
+    padding: 2rem;
+  }
+  h1 { text-align: center; font-size: 2rem; margin-bottom: 0.5rem; color: #fff; }
+  .subtitle { text-align: center; color: #888; margin-bottom: 2rem; }
+
+  .status { text-align: center; color: #aaa; margin-bottom: 1rem; font-size: 0.95rem; }
+  .status.ready { color: #4caf50; }
+  .status.error { color: #f44336; }
+
+  .progress-wrap {
+    max-width: 600px; margin: 0 auto 1.5rem; height: 8px;
+    background: #2a2d37; border-radius: 4px; overflow: hidden;
+  }
+  .progress-wrap.hidden { display: none; }
+  .progress-bar {
+    height: 100%; background: #4a90d9; border-radius: 4px;
+    transition: width 0.3s; width: 0%;
+  }
+
+  /* Tabs */
+  .tabs {
+    display: flex; justify-content: center; gap: 0; margin-bottom: 0;
+    max-width: 600px; margin: 0 auto;
+  }
+  .tab {
+    flex: 1; padding: 0.8rem 1rem; text-align: center; cursor: pointer;
+    background: #1a1d27; color: #888; font-weight: 600; font-size: 0.95rem;
+    border: 1px solid #2a2d37; transition: all 0.2s;
+  }
+  .tab:first-child { border-radius: 10px 0 0 0; }
+  .tab:last-child { border-radius: 0 10px 0 0; }
+  .tab.active { background: #2a2d37; color: #fff; border-bottom-color: #2a2d37; }
+  .tab-content {
+    display: none; max-width: 600px; margin: 0 auto 2rem;
+    background: #2a2d37; border-radius: 0 0 10px 10px; padding: 1.5rem;
+    border: 1px solid #2a2d37;
+  }
+  .tab-content.active { display: block; }
+
+  /* Form */
+  .form-row { display: flex; gap: 0.8rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+  .form-group { flex: 1; min-width: 140px; }
+  .form-group label { display: block; font-size: 0.8rem; color: #aaa; margin-bottom: 0.3rem; }
+  .form-group input {
+    width: 100%; padding: 0.5rem 0.7rem; border: 1px solid #3a3d47;
+    background: #0f1117; color: #e0e0e0; border-radius: 6px; font-size: 0.9rem;
+  }
+  .form-group input:focus { outline: none; border-color: #4a90d9; }
+
+  .controls { text-align: center; margin-bottom: 2rem; }
+  .btn {
+    padding: 0.7rem 1.5rem; border: none; border-radius: 8px;
+    font-size: 1rem; font-weight: 600; cursor: pointer; margin: 0 0.3rem;
+    transition: background 0.2s;
+  }
+  .btn.primary { background: #4a90d9; color: #fff; }
+  .btn.primary:hover { background: #3a7bc8; }
+  .btn.primary:disabled { background: #333; cursor: not-allowed; }
+  .btn.secondary { background: #1a1d27; color: #ccc; border: 1px solid #3a3d47; }
+  .btn.secondary:hover { background: #2a2d37; }
+
+  /* Upload area */
+  .drop-zone {
+    border: 2px dashed #3a3d47; border-radius: 10px;
+    padding: 1.5rem; text-align: center; color: #666;
+    cursor: pointer; transition: border-color 0.2s, background 0.2s;
+  }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #4a90d9; background: #1a1d2f; }
+  .drop-zone input { display: none; }
+  .drop-zone .browse-link { color: #4a90d9; cursor: pointer; text-decoration: underline; }
+
+  /* Results */
+  #results-section { display: none; max-width: 1200px; margin: 0 auto; }
+  .results-header { text-align: center; font-size: 1.1rem; margin-bottom: 0.5rem; color: #ccc; }
+  .results-source { text-align: center; font-size: 0.85rem; color: #666; margin-bottom: 1.5rem; }
+  .columns { display: flex; gap: 2rem; }
+  @media (max-width: 700px) { .columns { flex-direction: column; } }
+  .column { flex: 1; }
+  .column h3 { margin-bottom: 0.8rem; padding-bottom: 0.5rem; border-bottom: 2px solid #2a2d37; }
+  .column h3.dura { border-color: #4caf50; color: #4caf50; }
+  .column h3.non-dura { border-color: #f44336; color: #f44336; }
+  .gallery {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0.5rem; margin-bottom: 1rem;
+  }
+  .gallery img {
+    width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px;
+    cursor: pointer; transition: transform 0.15s;
+  }
+  .gallery img:hover { transform: scale(1.05); }
+  .empty-msg { color: #666; font-style: italic; padding: 1rem 0; }
+  .dl-btn {
+    display: inline-block; padding: 0.5rem 1.2rem; font-size: 0.85rem;
+    background: #1a1d27; border-radius: 6px; text-decoration: none;
+    color: #e0e0e0; border: 1px solid #3a3d47; cursor: pointer;
+    transition: background 0.2s;
+  }
+  .dl-btn:hover { background: #2a2d37; }
+
+  /* Lightbox */
+  .lightbox {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.9); z-index: 100;
+    justify-content: center; align-items: center; cursor: pointer;
+  }
+  .lightbox.active { display: flex; }
+  .lightbox img { max-width: 90%; max-height: 90%; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<h1>Dura Bulk Detector</h1>
+<p class="subtitle">Detect boats with object detection + OCR for "Dura Bulk" text</p>
+
+<div id="status" class="status">Loading models...</div>
+<div id="progress-wrap" class="progress-wrap hidden">
+  <div id="progress-bar" class="progress-bar"></div>
+</div>
+
+<!-- Tabs: Download from Instagram vs Upload your own -->
+<div class="tabs">
+  <div class="tab active" data-tab="download">Download from Instagram</div>
+  <div class="tab" data-tab="upload">Upload Your Own</div>
+</div>
+
+<!-- Tab 1: Download form -->
+<div class="tab-content active" id="tab-download">
+  <div class="form-row">
+    <div class="form-group" style="flex: 2;">
+      <label for="profile-input">Profile or #hashtag</label>
+      <input type="text" id="profile-input" placeholder="durabulk" value="durabulk">
+    </div>
+    <div class="form-group">
+      <label for="max-posts-input">Max images</label>
+      <input type="number" id="max-posts-input" value="100" min="1" max="500">
+    </div>
+  </div>
+  <div class="form-row">
+    <div class="form-group">
+      <label for="start-date-input">Start date</label>
+      <input type="date" id="start-date-input" value="2025-01-01">
+    </div>
+    <div class="form-group">
+      <label for="end-date-input">End date</label>
+      <input type="date" id="end-date-input" value="2025-12-31">
+    </div>
+  </div>
+  <div style="text-align: center; margin-top: 1rem;">
+    <button class="btn primary" id="download-btn">Download &amp; Analyze</button>
+  </div>
+</div>
+
+<!-- Tab 2: Upload / drag-drop -->
+<div class="tab-content" id="tab-upload">
+  <div class="drop-zone" id="drop-zone">
+    <p>Drag &amp; drop images here, or <label for="file-input" class="browse-link">browse</label></p>
+    <input type="file" id="file-input" accept="image/*" multiple>
+  </div>
+  <div style="text-align: center; margin-top: 1rem;">
+    <button class="btn primary" id="analyze-btn" disabled>Analyze in Browser</button>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="btn secondary" id="clear-btn">Clear Results</button>
+</div>
+
+<div id="results-section">
+  <p class="results-header" id="results-summary"></p>
+  <p class="results-source" id="results-source"></p>
+  <div class="columns">
+    <div class="column">
+      <h3 class="dura">Dura Bulk (<span id="dura-count">0</span>)</h3>
+      <div class="gallery" id="dura-gallery"></div>
+      <a class="dl-btn" id="dl-dura" style="display:none;">Download ZIP</a>
+    </div>
+    <div class="column">
+      <h3 class="non-dura">Other (<span id="non-dura-count">0</span>)</h3>
+      <div class="gallery" id="non-dura-gallery"></div>
+      <a class="dl-btn" id="dl-non-dura" style="display:none;">Download ZIP</a>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('active')">
+  <img id="lightbox-img" src="" alt="Full size">
+</div>
+
+<script>
+// ============================================================
+// CONFIG: Set this to your Render deployment URL
+// When served by Flask (on Render), leave empty to use same origin.
+// When opened as a static file, set the full Render URL.
+// ============================================================
+const API_BASE = window.location.protocol === "file:"
+  ? "https://dura-bulk-detector.onrender.com"  // <-- UPDATE with your Render URL
+  : "";  // Same origin when served by Flask
+
+const statusEl = document.getElementById("status");
+const progressWrap = document.getElementById("progress-wrap");
+const progressBar = document.getElementById("progress-bar");
+const analyzeBtn = document.getElementById("analyze-btn");
+const clearBtn = document.getElementById("clear-btn");
+const downloadBtn = document.getElementById("download-btn");
+const dropZone = document.getElementById("drop-zone");
+const fileInput = document.getElementById("file-input");
+const resultsSection = document.getElementById("results-section");
+const resultsSummary = document.getElementById("results-summary");
+const resultsSource = document.getElementById("results-source");
+const duraGallery = document.getElementById("dura-gallery");
+const nonDuraGallery = document.getElementById("non-dura-gallery");
+const duraCountEl = document.getElementById("dura-count");
+const nonDuraCountEl = document.getElementById("non-dura-count");
+const lightbox = document.getElementById("lightbox");
+const lightboxImg = document.getElementById("lightbox-img");
+const dlDura = document.getElementById("dl-dura");
+const dlNonDura = document.getElementById("dl-non-dura");
+
+let cocoModel = null;
+let ocrWorker = null;
+let allImages = []; // { img, src, name }
+
+// --- Tabs ---
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("tab-" + tab.dataset.tab).classList.add("active");
+  });
+});
+
+function openLightbox(src) {
+  lightboxImg.src = src;
+  lightbox.classList.add("active");
+}
+
+function showProgress(frac) {
+  progressWrap.classList.remove("hidden");
+  progressBar.style.width = (frac * 100).toFixed(1) + "%";
+}
+
+function hideProgress() {
+  progressWrap.classList.add("hidden");
+  progressBar.style.width = "0%";
+}
+
+// ============================================================
+// DOWNLOAD TAB: Fetch from Instagram via backend API
+// ============================================================
+downloadBtn.addEventListener("click", async () => {
+  const profile = document.getElementById("profile-input").value.trim().replace(/^[@#]/, "");
+  const startDate = document.getElementById("start-date-input").value;
+  const endDate = document.getElementById("end-date-input").value;
+  const maxPosts = parseInt(document.getElementById("max-posts-input").value) || 100;
+
+  if (!profile || !startDate || !endDate) {
+    statusEl.textContent = "Please fill in all fields.";
+    statusEl.className = "status error";
+    return;
+  }
+
+  downloadBtn.disabled = true;
+  statusEl.textContent = "Starting download...";
+  statusEl.className = "status";
+
+  try {
+    const resp = await fetch(API_BASE + "/api/scrape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        profile: profile,
+        start_date: startDate,
+        end_date: endDate,
+        max_posts: maxPosts,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      statusEl.textContent = `Error: ${err.error || "Request failed"}`;
+      statusEl.className = "status error";
+      downloadBtn.disabled = false;
+      return;
+    }
+
+    const { job_id } = await resp.json();
+    pollBackendJob(job_id);
+
+  } catch (e) {
+    statusEl.textContent = `Could not connect to backend. Make sure the server is running.`;
+    statusEl.className = "status error";
+    downloadBtn.disabled = false;
+  }
+});
+
+function pollBackendJob(jobId) {
+  const poll = setInterval(async () => {
+    try {
+      const resp = await fetch(API_BASE + `/api/status/${jobId}`);
+      const job = await resp.json();
+
+      statusEl.textContent = job.detail || job.step;
+      statusEl.className = "status";
+
+      if (job.total > 0 && job.current > 0) {
+        showProgress(job.current / job.total);
+      }
+
+      if (job.step === "done") {
+        clearInterval(poll);
+        hideProgress();
+        downloadBtn.disabled = false;
+        if (job.results) displayBackendResults(job.results);
+      } else if (job.step === "error") {
+        clearInterval(poll);
+        hideProgress();
+        statusEl.className = "status error";
+        downloadBtn.disabled = false;
+      }
+    } catch {
+      clearInterval(poll);
+      downloadBtn.disabled = false;
+      statusEl.textContent = "Lost connection to backend.";
+      statusEl.className = "status error";
+    }
+  }, 1500);
+}
+
+function displayBackendResults(results) {
+  duraGallery.innerHTML = "";
+  nonDuraGallery.innerHTML = "";
+
+  const duraFiles = results.dura_bulk || [];
+  const nonDuraFiles = results.non_dura_bulk || [];
+
+  duraCountEl.textContent = duraFiles.length;
+  nonDuraCountEl.textContent = nonDuraFiles.length;
+  resultsSummary.textContent =
+    `${duraFiles.length + nonDuraFiles.length} images: ${duraFiles.length} with "Dura Bulk", ${nonDuraFiles.length} other.`;
+  resultsSource.textContent = "Source: server-side analysis (YOLOv8 + EasyOCR)";
+
+  duraFiles.forEach(name => {
+    const img = document.createElement("img");
+    img.src = API_BASE + `/api/images/dura_bulk/${encodeURIComponent(name)}`;
+    img.alt = name; img.loading = "lazy";
+    img.onclick = () => openLightbox(img.src);
+    duraGallery.appendChild(img);
+  });
+
+  nonDuraFiles.forEach(name => {
+    const img = document.createElement("img");
+    img.src = API_BASE + `/api/images/non_dura_bulk/${encodeURIComponent(name)}`;
+    img.alt = name; img.loading = "lazy";
+    img.onclick = () => openLightbox(img.src);
+    nonDuraGallery.appendChild(img);
+  });
+
+  if (duraFiles.length === 0) duraGallery.innerHTML = '<p class="empty-msg">No matches found.</p>';
+  if (nonDuraFiles.length === 0) nonDuraGallery.innerHTML = '<p class="empty-msg">No images.</p>';
+
+  dlDura.href = API_BASE + "/api/download/dura_bulk";
+  dlNonDura.href = API_BASE + "/api/download/non_dura_bulk";
+  dlDura.style.display = duraFiles.length > 0 ? "inline-block" : "none";
+  dlNonDura.style.display = nonDuraFiles.length > 0 ? "inline-block" : "none";
+
+  resultsSection.style.display = "block";
+  statusEl.textContent = `Done — ${duraFiles.length} Dura Bulk, ${nonDuraFiles.length} other.`;
+  statusEl.classList.add("ready");
+}
+
+// ============================================================
+// UPLOAD TAB: Drag-drop + browser-based analysis
+// ============================================================
+
+// --- Display pre-computed results from results.json ---
+function displayPrecomputedResults(results) {
+  duraGallery.innerHTML = "";
+  nonDuraGallery.innerHTML = "";
+
+  const entries = Object.entries(results);
+  const duraEntries = entries.filter(([_, r]) => r.dura_bulk);
+  const nonDuraEntries = entries.filter(([_, r]) => !r.dura_bulk);
+
+  duraCountEl.textContent = duraEntries.length;
+  nonDuraCountEl.textContent = nonDuraEntries.length;
+  resultsSummary.textContent =
+    `${entries.length} images: ${duraEntries.length} with "Dura Bulk", ${nonDuraEntries.length} other.`;
+  resultsSource.textContent = "Source: pre-computed results (YOLOv8 + EasyOCR)";
+
+  duraEntries.forEach(([name]) => {
+    const img = document.createElement("img");
+    img.src = `./images/${name}`;
+    img.alt = name;
+    img.title = results[name].details || "";
+    img.loading = "lazy";
+    img.onclick = () => openLightbox(img.src);
+    duraGallery.appendChild(img);
+  });
+
+  nonDuraEntries.forEach(([name]) => {
+    const img = document.createElement("img");
+    img.src = `./images/${name}`;
+    img.alt = name;
+    img.title = results[name].details || "";
+    img.loading = "lazy";
+    img.onclick = () => openLightbox(img.src);
+    nonDuraGallery.appendChild(img);
+  });
+
+  if (duraEntries.length === 0) duraGallery.innerHTML = '<p class="empty-msg">No matches found.</p>';
+  if (nonDuraEntries.length === 0) nonDuraGallery.innerHTML = '<p class="empty-msg">No images.</p>';
+
+  dlDura.style.display = "none";
+  dlNonDura.style.display = "none";
+  resultsSection.style.display = "block";
+}
+
+// --- Load models ---
+async function loadModels() {
+  statusEl.textContent = "Loading COCO-SSD model...";
+  cocoModel = await cocoSsd.load();
+
+  statusEl.textContent = "Loading OCR engine...";
+  ocrWorker = await Tesseract.createWorker("eng");
+
+  statusEl.textContent = "Models ready.";
+  statusEl.classList.add("ready");
+}
+
+// --- Load preset images from image-list.json ---
+async function loadPresetImages() {
+  try {
+    const resp = await fetch("./image-list.json");
+    if (!resp.ok) return;
+    const imageNames = await resp.json();
+    if (!imageNames.length) return;
+
+    statusEl.textContent = `Loading ${imageNames.length} preset images...`;
+    showProgress(0);
+
+    for (let i = 0; i < imageNames.length; i++) {
+      const url = `./images/${imageNames[i]}`;
+      try {
+        const img = await loadImage(url);
+        allImages.push({ img, src: url, name: imageNames[i] });
+      } catch {
+        console.warn("Failed to load", url);
+      }
+      showProgress((i + 1) / imageNames.length);
+    }
+
+    hideProgress();
+  } catch {
+    // No image-list.json — that's fine
+  }
+}
+
+async function loadPrecomputedResults() {
+  try {
+    const resp = await fetch("./results.json");
+    if (!resp.ok) return false;
+    const results = await resp.json();
+    if (Object.keys(results).length === 0) return false;
+
+    displayPrecomputedResults(results);
+    statusEl.textContent = `Showing pre-computed results for ${Object.keys(results).length} images.`;
+    statusEl.classList.add("ready");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// --- Drag & drop ---
+dropZone.addEventListener("click", (e) => {
+  if (e.target === fileInput) return;
+  fileInput.click();
+});
+dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("dragover");
+  const files = [...e.dataTransfer.files].filter(f => f.type.startsWith("image/"));
+  if (files.length) addFiles(files);
+});
+fileInput.addEventListener("change", () => {
+  const files = [...fileInput.files];
+  if (files.length) addFiles(files);
+  fileInput.value = "";
+});
+
+async function addFiles(files) {
+  statusEl.textContent = `Loading ${files.length} file(s)...`;
+  statusEl.className = "status";
+  showProgress(0);
+
+  for (let i = 0; i < files.length; i++) {
+    const img = await loadImageFromFile(files[i]);
+    allImages.push({ img, src: img.src, name: files[i].name });
+    showProgress((i + 1) / files.length);
+  }
+
+  hideProgress();
+  statusEl.textContent = `${allImages.length} images loaded. Click "Analyze in Browser" to detect.`;
+  statusEl.classList.add("ready");
+  analyzeBtn.disabled = false;
+}
+
+// --- Fuzzy match ---
+function fuzzyMatchDuraBulk(text) {
+  const lower = text.toLowerCase().trim();
+  if (lower.includes("dura") && lower.includes("bulk")) return true;
+  const cleaned = lower.replace(/[^a-z0-9]/g, "");
+  return cleaned.includes("durabulk");
+}
+
+// --- Analyze all images in browser ---
+async function analyzeAll() {
+  if (!cocoModel || allImages.length === 0) return;
+
+  analyzeBtn.disabled = true;
+  resultsSection.style.display = "none";
+  duraGallery.innerHTML = "";
+  nonDuraGallery.innerHTML = "";
+
+  const duraResults = [];
+  const nonDuraResults = [];
+
+  showProgress(0);
+
+  for (let i = 0; i < allImages.length; i++) {
+    const entry = allImages[i];
+    statusEl.textContent = `[${i + 1}/${allImages.length}] Detecting objects in ${entry.name}...`;
+    statusEl.className = "status";
+
+    const predictions = await cocoModel.detect(entry.img);
+    const boats = predictions.filter(p => p.class === "boat");
+
+    let isDura = false;
+
+    for (const boat of boats) {
+      const [x, y, w, h] = boat.bbox;
+
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = w;
+      cropCanvas.height = h;
+      const cropCtx = cropCanvas.getContext("2d");
+      cropCtx.drawImage(entry.img, x, y, w, h, 0, 0, w, h);
+
+      statusEl.textContent = `[${i + 1}/${allImages.length}] OCR on boat in ${entry.name}...`;
+
+      try {
+        const { data } = await ocrWorker.recognize(cropCanvas);
+        const ocrText = data.text || "";
+        if (fuzzyMatchDuraBulk(ocrText)) {
+          isDura = true;
+          break;
+        }
+      } catch {
+        // OCR failed, skip
+      }
+    }
+
+    if (isDura) {
+      duraResults.push(entry);
+    } else {
+      nonDuraResults.push(entry);
+    }
+
+    showProgress((i + 1) / allImages.length);
+  }
+
+  hideProgress();
+
+  duraCountEl.textContent = duraResults.length;
+  nonDuraCountEl.textContent = nonDuraResults.length;
+  resultsSummary.textContent =
+    `${allImages.length} images: ${duraResults.length} with "Dura Bulk", ${nonDuraResults.length} other.`;
+  resultsSource.textContent = "Source: browser analysis (COCO-SSD + Tesseract.js)";
+
+  duraResults.forEach(entry => {
+    const img = document.createElement("img");
+    img.src = entry.src; img.alt = entry.name; img.loading = "lazy";
+    img.onclick = () => openLightbox(entry.src);
+    duraGallery.appendChild(img);
+  });
+
+  nonDuraResults.forEach(entry => {
+    const img = document.createElement("img");
+    img.src = entry.src; img.alt = entry.name; img.loading = "lazy";
+    img.onclick = () => openLightbox(entry.src);
+    nonDuraGallery.appendChild(img);
+  });
+
+  if (duraResults.length === 0) duraGallery.innerHTML = '<p class="empty-msg">No matches found.</p>';
+  if (nonDuraResults.length === 0) nonDuraGallery.innerHTML = '<p class="empty-msg">No images.</p>';
+
+  dlDura.style.display = "none";
+  dlNonDura.style.display = "none";
+  resultsSection.style.display = "block";
+  statusEl.textContent = `Done — ${duraResults.length} Dura Bulk, ${nonDuraResults.length} other.`;
+  statusEl.classList.add("ready");
+  analyzeBtn.disabled = false;
+}
+
+// --- Clear ---
+clearBtn.addEventListener("click", () => {
+  allImages = [];
+  duraGallery.innerHTML = "";
+  nonDuraGallery.innerHTML = "";
+  resultsSection.style.display = "none";
+  analyzeBtn.disabled = true;
+  dlDura.style.display = "none";
+  dlNonDura.style.display = "none";
+  statusEl.textContent = "Cleared.";
+  statusEl.className = "status";
+});
+
+// --- Init ---
+async function init() {
+  // Try loading pre-computed results first
+  const hasResults = await loadPrecomputedResults();
+
+  // Load browser models + preset images in parallel
+  const modelPromise = loadModels();
+  const imagePromise = loadPresetImages();
+
+  await modelPromise;
+  await imagePromise;
+
+  if (allImages.length > 0) {
+    analyzeBtn.disabled = false;
+    if (!hasResults) {
+      statusEl.textContent = `${allImages.length} images loaded. Click "Analyze in Browser" to detect.`;
+      statusEl.classList.add("ready");
+    }
+  } else if (!hasResults) {
+    statusEl.textContent = "Ready. Download images from Instagram or upload your own.";
+    statusEl.classList.add("ready");
+  }
+}
+
+analyzeBtn.addEventListener("click", analyzeAll);
+init();
+</script>
+
+</body>
+</html>
