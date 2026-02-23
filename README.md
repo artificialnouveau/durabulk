@@ -102,4 +102,20 @@ Enter your password when prompted. Then use `--login your_username` when running
 
 ### Step 5: Analyze the images
 
-Once you have the images downloaded, go to **https://durabulk.onrender.com/** and use the **Upload Your Own** tab to drag and drop your images for analysis.
+**Option A: Analyze in your browser (no extra install needed)**
+
+Go to **https://durabulk.onrender.com/** and use the **Upload Your Own** tab to drag and drop your downloaded images. The OCR analysis runs entirely in your browser.
+
+**Option B: Analyze locally with Python**
+
+This uses EasyOCR to scan each image for "Dura Bulk" text (including partial/obscured matches) and sorts them into `results/dura_bulk/` and `results/non_dura_bulk/` folders.
+
+```
+python3 local_analyze.py
+```
+
+By default it reads from `images/` and writes to `results/`. You can change this:
+
+```
+python3 local_analyze.py --input my_images --output my_results
+```

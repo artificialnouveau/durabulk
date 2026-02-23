@@ -1,1 +1,3 @@
 instaloader
+easyocr
+pillow
