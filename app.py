@@ -12,72 +12,24 @@ from pathlib import Path
 import requests as http_requests
 from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
-from PIL import Image
 from apify_client import ApifyClient
-import easyocr
 
 app = Flask(__name__)
 CORS(app)
 
 BASE_DIR = Path(__file__).parent
 DOWNLOADS_DIR = BASE_DIR / "downloads"
-DURA_DIR = DOWNLOADS_DIR / "dura_bulk"
-NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Apify API token (set via Render environment variables)
 APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 
-# EasyOCR model directory (ensure it's writable on Render)
-EASYOCR_DIR = BASE_DIR / ".easyocr"
-EASYOCR_DIR.mkdir(parents=True, exist_ok=True)
-os.environ["EASYOCR_MODULE_PATH"] = str(EASYOCR_DIR)
-
-# Ensure output dirs exist
-DURA_DIR.mkdir(parents=True, exist_ok=True)
-NON_DURA_DIR.mkdir(parents=True, exist_ok=True)
-
 # In-memory job store
 jobs = {}
 
-# Lazy-loaded OCR reader
-_ocr_reader = None
-
-
-def get_ocr():
-    global _ocr_reader
-    if _ocr_reader is None:
-        _ocr_reader = easyocr.Reader(["en"], gpu=False)
-    return _ocr_reader
-
-
-def fuzzy_match_dura_bulk(text):
-    """Check if text contains 'dura bulk' or partial matches.
-
-    Handles obscured letters by checking for substrings of 'durabulk'
-    that are at least 4 characters long.
-    """
-    text = text.lower().strip()
-    cleaned = re.sub(r"[^a-z0-9]", "", text)
-
-    # Check for full words
-    if "dura" in text and "bulk" in text:
-        return True
-    if "durabulk" in cleaned:
-        return True
-
-    # Check for partial matches (4+ char substrings of "durabulk")
-    target = "durabulk"
-    for length in range(4, len(target) + 1):
-        for start in range(len(target) - length + 1):
-            substring = target[start:start + length]
-            if substring in cleaned:
-                return True
-
-    return False
-
 
 def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False):
-    """Background pipeline: scrape via Apify → OCR → sort."""
+    """Background pipeline: scrape via Apify → download images."""
     job = jobs[job_id]
 
     try:
@@ -91,10 +43,12 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
             job["detail"] = "Apify API token not configured. Set APIFY_TOKEN env var."
             return
 
-        tmp_dir = tempfile.mkdtemp(prefix="dura_bulk_")
+        # Create a job-specific download folder
+        job_dir = DOWNLOADS_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
         client = ApifyClient(APIFY_TOKEN)
 
-        # Use the Instagram Scraper actor
         run_input = {
             "resultsLimit": max_posts,
         }
@@ -121,26 +75,22 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        image_paths = []
-        count = 0
-
-        # Collect all items first
         all_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         job["detail"] = f"Got {len(all_items)} items from Apify. Downloading..."
 
         if not all_items:
             job["step"] = "done"
             job["detail"] = "Apify returned 0 items from dataset."
-            job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
+            job["results"] = {"images": []}
             return
 
-        items_seen = 0
+        count = 0
+        downloaded = []
         skipped_date = 0
         skipped_video = 0
         skipped_no_url = 0
 
         for item in all_items:
-            items_seen += 1
             if count >= max_posts:
                 break
 
@@ -160,7 +110,7 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 skipped_video += 1
                 continue
 
-            # Get image URL — try multiple field names used by different Apify actors
+            # Get image URL
             image_url = (
                 item.get("displayUrl")
                 or item.get("imageUrl")
@@ -169,7 +119,6 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 or ""
             )
             if not image_url:
-                # Try first image in carousel
                 images = item.get("images") or item.get("childPosts") or []
                 if images:
                     first_img = images[0]
@@ -192,138 +141,32 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                     pass
             if not date_prefix:
                 date_prefix = "nodate"
-            filename = f"{date_prefix}_{name}_{count:03d}.jpg"
-            filepath = os.path.join(tmp_dir, filename)
+
+            owner = item.get("ownerUsername") or name
+            filename = f"{date_prefix}_{owner}_{count:03d}.jpg"
+            filepath = job_dir / filename
 
             try:
                 resp = http_requests.get(image_url, timeout=30)
                 if resp.status_code == 200:
                     with open(filepath, "wb") as f:
                         f.write(resp.content)
-                    image_paths.append(Path(filepath))
+                    downloaded.append(filename)
                     count += 1
                     job["current"] = count
                     job["detail"] = f"Downloading from {label}: {count} images..."
             except Exception:
                 continue
 
-        job["total"] = len(image_paths)
-        job["current"] = 0
-        job["detail"] = f"Downloaded {len(image_paths)} images. Starting OCR analysis..."
-
-        if not image_paths:
-            job["step"] = "done"
-            job["detail"] = f"No images downloaded. {items_seen} items from Apify: {skipped_date} filtered by date, {skipped_video} videos, {skipped_no_url} had no image URL."
-            job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
-            return
-
-        # --- Step 2: OCR on full images (no boat detection needed) ---
-        job["step"] = "detecting"
-        reader = get_ocr()
-
-        dura_files = []
-        non_dura_files = []
-        job["partial_results"] = {"dura_bulk": [], "non_dura_bulk": []}
-
-        for i, img_path in enumerate(image_paths):
-            job["current"] = i + 1
-            job["detail"] = f"OCR on image {i + 1}/{len(image_paths)}"
-
-            try:
-                ocr_results = reader.readtext(str(img_path))
-                all_text = " ".join([r[1] for r in ocr_results])
-                is_dura = fuzzy_match_dura_bulk(all_text)
-            except Exception:
-                is_dura = False
-
-            # Sort image
-            dest_dir = DURA_DIR if is_dura else NON_DURA_DIR
-            dest_name = img_path.name
-            shutil.copy2(img_path, dest_dir / dest_name)
-
-            if is_dura:
-                dura_files.append(dest_name)
-                job["partial_results"]["dura_bulk"].append(dest_name)
-            else:
-                non_dura_files.append(dest_name)
-                job["partial_results"]["non_dura_bulk"].append(dest_name)
-
-        # Cleanup temp dir
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
         # --- Done ---
         job["step"] = "done"
-        job["detail"] = (
-            f"Done! {len(dura_files)} Dura Bulk, {len(non_dura_files)} other."
-        )
-        job["results"] = {
-            "dura_bulk": dura_files,
-            "non_dura_bulk": non_dura_files,
-        }
-
-    except Exception as e:
-        job["step"] = "error"
-        job["detail"] = str(e)
-
-
-def run_upload_pipeline(job_id, tmp_dir):
-    """Pipeline for uploaded images: OCR → sort."""
-    job = jobs[job_id]
-
-    try:
-        image_paths = [
-            f for f in Path(tmp_dir).iterdir()
-            if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")
-        ]
-
-        job["total"] = len(image_paths)
-        job["step"] = "detecting"
-        job["detail"] = f"Processing {len(image_paths)} images..."
-
-        if not image_paths:
-            job["step"] = "done"
-            job["detail"] = "No valid images found."
-            job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
-            return
-
-        reader = get_ocr()
-
-        dura_files = []
-        non_dura_files = []
-        job["partial_results"] = {"dura_bulk": [], "non_dura_bulk": []}
-
-        for i, img_path in enumerate(image_paths):
-            job["current"] = i + 1
-            job["detail"] = f"OCR on image {i + 1}/{len(image_paths)}"
-
-            try:
-                ocr_results = reader.readtext(str(img_path))
-                all_text = " ".join([r[1] for r in ocr_results])
-                is_dura = fuzzy_match_dura_bulk(all_text)
-            except Exception:
-                is_dura = False
-
-            dest_dir = DURA_DIR if is_dura else NON_DURA_DIR
-            dest_name = f"upload_{i:04d}{img_path.suffix}"
-            shutil.copy2(img_path, dest_dir / dest_name)
-
-            if is_dura:
-                dura_files.append(dest_name)
-                job["partial_results"]["dura_bulk"].append(dest_name)
-            else:
-                non_dura_files.append(dest_name)
-                job["partial_results"]["non_dura_bulk"].append(dest_name)
-
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-        job["step"] = "done"
-        job["detail"] = (
-            f"Done! {len(dura_files)} Dura Bulk, {len(non_dura_files)} other."
-        )
-        job["results"] = {
-            "dura_bulk": dura_files,
-            "non_dura_bulk": non_dura_files,
-        }
+        if not downloaded:
+            job["detail"] = f"No images downloaded. {len(all_items)} items: {skipped_date} filtered by date, {skipped_video} videos, {skipped_no_url} had no image URL."
+        else:
+            job["detail"] = f"Done! Downloaded {len(downloaded)} images."
+        job["total"] = len(downloaded)
+        job["current"] = len(downloaded)
+        job["results"] = {"images": downloaded}
 
     except Exception as e:
         job["step"] = "error"
@@ -349,7 +192,6 @@ def start_scrape():
     if not raw_input or not start_date or not end_date:
         return jsonify({"error": "Missing required fields"}), 400
 
-    # Detect hashtag vs profile
     is_hashtag = raw_input.startswith("#")
     name = raw_input.lstrip("@#")
 
@@ -375,36 +217,6 @@ def start_scrape():
     return jsonify({"job_id": job_id})
 
 
-@app.route("/api/upload", methods=["POST"])
-def upload_images():
-    files = request.files.getlist("images")
-    if not files:
-        return jsonify({"error": "No images uploaded"}), 400
-
-    tmp_dir = tempfile.mkdtemp(prefix="dura_bulk_upload_")
-    for f in files:
-        if f.filename:
-            safe_name = os.path.basename(f.filename)
-            f.save(os.path.join(tmp_dir, safe_name))
-
-    job_id = str(uuid.uuid4())[:8]
-    jobs[job_id] = {
-        "step": "queued",
-        "detail": "Starting...",
-        "current": 0,
-        "total": 0,
-        "results": None,
-    }
-
-    thread = threading.Thread(
-        target=run_upload_pipeline, args=(job_id, tmp_dir)
-    )
-    thread.daemon = True
-    thread.start()
-
-    return jsonify({"job_id": job_id})
-
-
 @app.route("/api/status/<job_id>")
 def job_status(job_id):
     job = jobs.get(job_id)
@@ -413,24 +225,18 @@ def job_status(job_id):
     return jsonify(job)
 
 
-@app.route("/api/images/<category>/<filename>")
-def serve_image(category, filename):
-    if category == "dura_bulk":
-        folder = DURA_DIR
-    elif category == "non_dura_bulk":
-        folder = NON_DURA_DIR
-    else:
+@app.route("/api/images/<job_id>/<filename>")
+def serve_image(job_id, filename):
+    folder = DOWNLOADS_DIR / job_id
+    if not folder.exists():
         return "Not found", 404
     return send_from_directory(folder, filename)
 
 
-@app.route("/api/download/<category>")
-def download_zip(category):
-    if category == "dura_bulk":
-        folder = DURA_DIR
-    elif category == "non_dura_bulk":
-        folder = NON_DURA_DIR
-    else:
+@app.route("/api/download/<job_id>")
+def download_zip(job_id):
+    folder = DOWNLOADS_DIR / job_id
+    if not folder.exists():
         return "Not found", 404
 
     buf = io.BytesIO()
@@ -444,7 +250,7 @@ def download_zip(category):
         buf,
         mimetype="application/zip",
         as_attachment=True,
-        download_name=f"{category}.zip",
+        download_name=f"images_{job_id}.zip",
     )
 
 

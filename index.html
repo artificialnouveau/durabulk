@@ -198,7 +198,7 @@
       <a class="dl-btn" id="dl-dura" style="display:none;">Download ZIP</a>
     </div>
     <div class="column">
-      <h3 class="non-dura">Other (<span id="non-dura-count">0</span>)</h3>
+      <h3 class="non-dura">All Images (<span id="non-dura-count">0</span>)</h3>
       <div class="gallery" id="non-dura-gallery"></div>
       <a class="dl-btn" id="dl-non-dura" style="display:none;">Download ZIP</a>
     </div>
@@ -326,19 +326,18 @@ downloadBtn.addEventListener("click", async () => {
   }
 });
 
-let renderedDuraCount = 0;
-let renderedNonDuraCount = 0;
+let renderedImageCount = 0;
+let currentJobId = null;
 
 function pollBackendJob(jobId) {
-  // Reset live counters and show results section immediately
-  renderedDuraCount = 0;
-  renderedNonDuraCount = 0;
-  duraGallery.innerHTML = "";
+  currentJobId = jobId;
+  renderedImageCount = 0;
   nonDuraGallery.innerHTML = "";
-  duraCountEl.textContent = "0";
   nonDuraCountEl.textContent = "0";
-  resultsSummary.textContent = "Analyzing...";
-  resultsSource.textContent = "Source: server-side analysis (EasyOCR)";
+  duraGallery.innerHTML = "";
+  duraCountEl.textContent = "0";
+  resultsSummary.textContent = "Downloading images...";
+  resultsSource.textContent = "Downloaded from Instagram via Apify";
   resultsSection.style.display = "block";
   dlDura.style.display = "none";
   dlNonDura.style.display = "none";
@@ -357,48 +356,35 @@ function pollBackendJob(jobId) {
         showIndeterminate();
       }
 
-      // Render new images as they arrive
-      if (job.partial_results) {
-        const duraFiles = job.partial_results.dura_bulk || [];
-        const nonDuraFiles = job.partial_results.non_dura_bulk || [];
-
-        for (let i = renderedDuraCount; i < duraFiles.length; i++) {
-          const img = document.createElement("img");
-          img.src = API_BASE + `/api/images/dura_bulk/${encodeURIComponent(duraFiles[i])}`;
-          img.alt = duraFiles[i]; img.loading = "lazy";
-          img.onclick = () => openLightbox(img.src);
-          duraGallery.appendChild(img);
-        }
-        renderedDuraCount = duraFiles.length;
-
-        for (let i = renderedNonDuraCount; i < nonDuraFiles.length; i++) {
-          const img = document.createElement("img");
-          img.src = API_BASE + `/api/images/non_dura_bulk/${encodeURIComponent(nonDuraFiles[i])}`;
-          img.alt = nonDuraFiles[i]; img.loading = "lazy";
-          img.onclick = () => openLightbox(img.src);
-          nonDuraGallery.appendChild(img);
-        }
-        renderedNonDuraCount = nonDuraFiles.length;
-
-        duraCountEl.textContent = renderedDuraCount;
-        nonDuraCountEl.textContent = renderedNonDuraCount;
-        resultsSummary.textContent =
-          `${renderedDuraCount + renderedNonDuraCount} of ${job.total || "?"} images processed...`;
-      }
-
       if (job.step === "done") {
         clearInterval(poll);
         hideProgress();
         downloadBtn.disabled = false;
-        resultsSummary.textContent =
-          `${renderedDuraCount + renderedNonDuraCount} images: ${renderedDuraCount} with "Dura Bulk", ${renderedNonDuraCount} other.`;
-        statusEl.textContent = `Done — ${renderedDuraCount} Dura Bulk, ${renderedNonDuraCount} other.`;
+
+        const images = (job.results && job.results.images) || [];
+
+        // Show all downloaded images in the "Other" gallery (not yet analyzed)
+        nonDuraGallery.innerHTML = "";
+        images.forEach(name => {
+          const img = document.createElement("img");
+          img.src = API_BASE + `/api/images/${jobId}/${encodeURIComponent(name)}`;
+          img.alt = name; img.loading = "lazy";
+          img.onclick = () => openLightbox(img.src);
+          nonDuraGallery.appendChild(img);
+        });
+        nonDuraCountEl.textContent = images.length;
+        duraCountEl.textContent = "0";
+
+        resultsSummary.textContent = `${images.length} images downloaded. Use "Upload Your Own" tab to analyze for Dura Bulk text.`;
+        statusEl.textContent = `Done — ${images.length} images downloaded.`;
         statusEl.classList.add("ready");
 
-        dlDura.href = API_BASE + "/api/download/dura_bulk";
-        dlNonDura.href = API_BASE + "/api/download/non_dura_bulk";
-        dlDura.style.display = renderedDuraCount > 0 ? "inline-block" : "none";
-        dlNonDura.style.display = renderedNonDuraCount > 0 ? "inline-block" : "none";
+        // Show download ZIP button
+        if (images.length > 0) {
+          dlNonDura.href = API_BASE + `/api/download/${jobId}`;
+          dlNonDura.textContent = "Download All as ZIP";
+          dlNonDura.style.display = "inline-block";
+        }
       } else if (job.step === "error") {
         clearInterval(poll);
         hideProgress();
@@ -412,48 +398,6 @@ function pollBackendJob(jobId) {
       statusEl.className = "status error";
     }
   }, 1500);
-}
-
-function displayBackendResults(results) {
-  duraGallery.innerHTML = "";
-  nonDuraGallery.innerHTML = "";
-
-  const duraFiles = results.dura_bulk || [];
-  const nonDuraFiles = results.non_dura_bulk || [];
-
-  duraCountEl.textContent = duraFiles.length;
-  nonDuraCountEl.textContent = nonDuraFiles.length;
-  resultsSummary.textContent =
-    `${duraFiles.length + nonDuraFiles.length} images: ${duraFiles.length} with "Dura Bulk", ${nonDuraFiles.length} other.`;
-  resultsSource.textContent = "Source: server-side analysis (EasyOCR)";
-
-  duraFiles.forEach(name => {
-    const img = document.createElement("img");
-    img.src = API_BASE + `/api/images/dura_bulk/${encodeURIComponent(name)}`;
-    img.alt = name; img.loading = "lazy";
-    img.onclick = () => openLightbox(img.src);
-    duraGallery.appendChild(img);
-  });
-
-  nonDuraFiles.forEach(name => {
-    const img = document.createElement("img");
-    img.src = API_BASE + `/api/images/non_dura_bulk/${encodeURIComponent(name)}`;
-    img.alt = name; img.loading = "lazy";
-    img.onclick = () => openLightbox(img.src);
-    nonDuraGallery.appendChild(img);
-  });
-
-  if (duraFiles.length === 0) duraGallery.innerHTML = '<p class="empty-msg">No matches found.</p>';
-  if (nonDuraFiles.length === 0) nonDuraGallery.innerHTML = '<p class="empty-msg">No images.</p>';
-
-  dlDura.href = API_BASE + "/api/download/dura_bulk";
-  dlNonDura.href = API_BASE + "/api/download/non_dura_bulk";
-  dlDura.style.display = duraFiles.length > 0 ? "inline-block" : "none";
-  dlNonDura.style.display = nonDuraFiles.length > 0 ? "inline-block" : "none";
-
-  resultsSection.style.display = "block";
-  statusEl.textContent = `Done — ${duraFiles.length} Dura Bulk, ${nonDuraFiles.length} other.`;
-  statusEl.classList.add("ready");
 }
 
 // ============================================================
