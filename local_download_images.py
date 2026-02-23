@@ -1,0 +1,110 @@
+"""
+Download Instagram images locally using instaloader.
+
+Usage:
+    python local_download_images.py durabulk
+    python local_download_images.py durabulk --start 2025-01-01 --end 2025-12-31
+    python local_download_images.py "#durabulk" --max 50
+    python local_download_images.py durabulk --login your_username
+
+Images are saved to ./images/ as YYYYMMDD_profilename_NNN.jpg
+"""
+
+import argparse
+import os
+from datetime import datetime
+from pathlib import Path
+
+import instaloader
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Download Instagram images locally")
+    parser.add_argument("target", help="Profile name or #hashtag (e.g. durabulk or #durabulk)")
+    parser.add_argument("--start", default="2020-01-01", help="Start date YYYY-MM-DD (default: 2020-01-01)")
+    parser.add_argument("--end", default=datetime.now().strftime("%Y-%m-%d"), help="End date YYYY-MM-DD (default: today)")
+    parser.add_argument("--max", type=int, default=100, help="Max images to download (default: 100)")
+    parser.add_argument("--login", default=None, help="Instagram username for login (needed for hashtags)")
+    parser.add_argument("--output", default="images", help="Output directory (default: images)")
+    args = parser.parse_args()
+
+    is_hashtag = args.target.startswith("#")
+    name = args.target.lstrip("@#")
+    start_dt = datetime.strptime(args.start, "%Y-%m-%d")
+    end_dt = datetime.strptime(args.end, "%Y-%m-%d")
+
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    L = instaloader.Instaloader(
+        download_pictures=True,
+        download_videos=False,
+        download_video_thumbnails=False,
+        download_geotags=False,
+        download_comments=False,
+        save_metadata=False,
+        compress_json=False,
+        post_metadata_txt_pattern="",
+    )
+
+    if args.login:
+        L.load_session_from_file(args.login)
+        print(f"Loaded session for @{args.login}")
+
+    count = 0
+
+    if is_hashtag:
+        if not args.login:
+            print("Error: hashtag scraping requires --login. Run:")
+            print(f"  instaloader --login YOUR_USERNAME")
+            print(f"  python local_download_images.py \"#{name}\" --login YOUR_USERNAME")
+            return
+        print(f"Fetching posts from #{name}...")
+        hashtag = instaloader.Hashtag.from_name(L.context, name)
+        posts = hashtag.get_posts()
+    else:
+        print(f"Fetching posts from @{name}...")
+        profile = instaloader.Profile.from_username(L.context, name)
+        posts = profile.get_posts()
+
+    for post in posts:
+        if count >= args.max:
+            break
+
+        post_date = post.date_local
+        if post_date.date() < start_dt.date() or post_date.date() > end_dt.date():
+            continue
+
+        if post.is_video:
+            continue
+
+        date_str = post_date.strftime("%Y%m%d")
+        owner = post.owner_username if is_hashtag else name
+        filename = f"{date_str}_{owner}_{count:03d}.jpg"
+        filepath = out_dir / filename
+
+        try:
+            L.download_pic(filename=str(filepath.with_suffix("")), url=post.url, mtime=post_date)
+            # instaloader adds its own extension, rename if needed
+            downloaded = filepath.with_suffix(".jpg")
+            if not downloaded.exists():
+                # Check for other extensions instaloader might have used
+                for ext in [".jpeg", ".png", ".webp"]:
+                    alt = filepath.with_suffix(ext)
+                    if alt.exists():
+                        alt.rename(downloaded)
+                        break
+            if downloaded.exists():
+                count += 1
+                print(f"  [{count}/{args.max}] {filename}")
+            else:
+                print(f"  Skipped (download failed): {post.shortcode}")
+        except Exception as e:
+            print(f"  Skipped: {e}")
+            continue
+
+    print(f"\nDone! {count} images saved to {out_dir}/")
+
+
+if __name__ == "__main__":
+    main()
