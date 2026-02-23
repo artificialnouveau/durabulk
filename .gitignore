@@ -1,6 +1,5 @@
 images/
 downloads/
-sessions/
 __pycache__/
 *.pyc
 .DS_Store

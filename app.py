@@ -28,6 +28,9 @@ NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Default shared Instagram session
+DEFAULT_IG_USERNAME = os.environ.get("IG_USERNAME", "schipschipschip")
+
 # Ensure output dirs exist
 DURA_DIR.mkdir(parents=True, exist_ok=True)
 NON_DURA_DIR.mkdir(parents=True, exist_ok=True)
@@ -392,8 +395,14 @@ def start_scrape():
     if not name:
         return jsonify({"error": "Missing required fields"}), 400
 
-    if is_hashtag and not use_session and (not ig_username or not ig_password):
-        return jsonify({"error": "Instagram login required for hashtag scraping"}), 400
+    # Auto-use default shared session if no credentials provided
+    if not use_session and not ig_password:
+        default_session = SESSIONS_DIR / f"session-{DEFAULT_IG_USERNAME}"
+        if default_session.exists():
+            use_session = True
+            ig_username = DEFAULT_IG_USERNAME
+        elif is_hashtag:
+            return jsonify({"error": "No Instagram session available. Upload a session file."}), 400
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {

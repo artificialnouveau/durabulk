@@ -171,7 +171,7 @@
     </div>
   </div>
   <details id="login-section" style="margin-top: 0.5rem;">
-    <summary style="cursor: pointer; color: #888; font-size: 0.85rem;">Instagram Login (required for #hashtag scraping)</summary>
+    <summary style="cursor: pointer; color: #888; font-size: 0.85rem;">Instagram Login (optional — shared session used by default)</summary>
     <div style="margin-top: 0.5rem;">
       <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
         <button type="button" class="login-tab active" data-login="session" style="flex:1; padding: 0.4rem; border-radius: 6px; border: 1px solid #3a3d47; background: #3a3d47; color: #fff; cursor: pointer; font-size: 0.8rem;">Session File (recommended)</button>
@@ -331,12 +331,6 @@ document.querySelectorAll(".login-tab").forEach(tab => {
   });
 });
 
-// Auto-expand login section when user types #
-document.getElementById("profile-input").addEventListener("input", (e) => {
-  if (e.target.value.trim().startsWith("#")) {
-    document.getElementById("login-section").open = true;
-  }
-});
 
 // Upload session file to server
 let sessionUploaded = false;
@@ -393,24 +387,7 @@ downloadBtn.addEventListener("click", async () => {
     return;
   }
 
-  // Check login for hashtag scraping
-  if (profile.startsWith("#")) {
-    if (loginMethod === "session") {
-      if (!sessionFileUsername || !sessionFileInput.files[0]) {
-        statusEl.textContent = "Upload a session file and enter your username for hashtag scraping.";
-        statusEl.className = "status error";
-        document.getElementById("login-section").open = true;
-        return;
-      }
-    } else {
-      if (!igUsername || !igPassword) {
-        statusEl.textContent = "Enter Instagram username and password for hashtag scraping.";
-        statusEl.className = "status error";
-        document.getElementById("login-section").open = true;
-        return;
-      }
-    }
-  }
+  // Note: server auto-uses shared session if no credentials provided
 
   downloadBtn.disabled = true;
   statusEl.textContent = "Connecting to server...";
