@@ -144,7 +144,7 @@
   <div class="form-row">
     <div class="form-group" style="flex: 2;">
       <label for="profile-input">Profile or #hashtag</label>
-      <input type="text" id="profile-input" placeholder="durabulk" value="durabulk">
+      <input type="text" id="profile-input" placeholder="durabulk or #durabulk" value="durabulk">
     </div>
     <div class="form-group">
       <label for="max-posts-input">Max images</label>
@@ -265,7 +265,7 @@ function hideProgress() {
 // DOWNLOAD TAB: Fetch from Instagram via backend API
 // ============================================================
 downloadBtn.addEventListener("click", async () => {
-  const profile = document.getElementById("profile-input").value.trim().replace(/^[@#]/, "");
+  const profile = document.getElementById("profile-input").value.trim();
   const startDate = document.getElementById("start-date-input").value;
   const endDate = document.getElementById("end-date-input").value;
   const maxPosts = parseInt(document.getElementById("max-posts-input").value) || 100;

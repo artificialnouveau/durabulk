@@ -63,14 +63,15 @@ def fuzzy_match_dura_bulk(text):
     return False
 
 
-def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
-    """Background pipeline: scrape profile → detect boats → OCR → sort."""
+def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False):
+    """Background pipeline: scrape profile/hashtag → detect boats → OCR → sort."""
     job = jobs[job_id]
 
     try:
-        # --- Step 1: Scrape by profile (no login needed) ---
+        # --- Step 1: Scrape ---
         job["step"] = "scraping"
-        job["detail"] = f"Fetching posts from @{profile_name}..."
+        label = f"#{name}" if is_hashtag else f"@{name}"
+        job["detail"] = f"Fetching posts from {label}..."
 
         tmp_dir = tempfile.mkdtemp(prefix="dura_bulk_")
         L = instaloader.Instaloader(
@@ -90,16 +91,21 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
         job["total"] = max_posts
         job["current"] = 0
         try:
-            profile = instaloader.Profile.from_username(L.context, profile_name)
+            if is_hashtag:
+                posts = instaloader.Hashtag.from_name(L.context, name).get_posts()
+            else:
+                profile = instaloader.Profile.from_username(L.context, name)
+                posts = profile.get_posts()
+
             count = 0
             skipped = 0
-            for post in profile.get_posts():
+            for post in posts:
                 if count >= max_posts:
                     break
                 post_date = post.date_utc
                 if post_date.date() > end_dt.date():
                     skipped += 1
-                    job["detail"] = f"Scanning posts from @{profile_name}... ({skipped} skipped, {count} downloaded)"
+                    job["detail"] = f"Scanning posts from {label}... ({skipped} skipped, {count} downloaded)"
                     continue
                 if post_date.date() < start_dt.date():
                     break
@@ -120,7 +126,7 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
                         image_paths.append(Path(filepath))
                     count += 1
                     job["current"] = count
-                    job["detail"] = f"Downloading from @{profile_name}: {count} of ~{max_posts} images..."
+                    job["detail"] = f"Downloading from {label}: {count} of ~{max_posts} images..."
                 except Exception:
                     continue
 
@@ -322,12 +328,19 @@ def index():
 @app.route("/api/scrape", methods=["POST"])
 def start_scrape():
     data = request.json
-    profile_name = data.get("profile", "").strip().lstrip("@")
+    raw_input = data.get("profile", "").strip()
     start_date = data.get("start_date", "")
     end_date = data.get("end_date", "")
     max_posts = int(data.get("max_posts", 100))
 
-    if not profile_name or not start_date or not end_date:
+    if not raw_input or not start_date or not end_date:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Detect hashtag vs profile
+    is_hashtag = raw_input.startswith("#")
+    name = raw_input.lstrip("@#")
+
+    if not name:
         return jsonify({"error": "Missing required fields"}), 400
 
     job_id = str(uuid.uuid4())[:8]
@@ -340,7 +353,7 @@ def start_scrape():
     }
 
     thread = threading.Thread(
-        target=run_pipeline, args=(job_id, profile_name, start_date, end_date, max_posts)
+        target=run_pipeline, args=(job_id, name, start_date, end_date, max_posts, is_hashtag)
     )
     thread.daemon = True
     thread.start()
