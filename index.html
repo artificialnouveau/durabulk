@@ -172,17 +172,40 @@
   </div>
   <details id="login-section" style="margin-top: 0.5rem;">
     <summary style="cursor: pointer; color: #888; font-size: 0.85rem;">Instagram Login (required for #hashtag scraping)</summary>
-    <div class="form-row" style="margin-top: 0.5rem;">
-      <div class="form-group">
-        <label for="ig-username">Instagram username</label>
-        <input type="text" id="ig-username" placeholder="your_username" autocomplete="username">
+    <div style="margin-top: 0.5rem;">
+      <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
+        <button type="button" class="login-tab active" data-login="session" style="flex:1; padding: 0.4rem; border-radius: 6px; border: 1px solid #3a3d47; background: #3a3d47; color: #fff; cursor: pointer; font-size: 0.8rem;">Session File (recommended)</button>
+        <button type="button" class="login-tab" data-login="password" style="flex:1; padding: 0.4rem; border-radius: 6px; border: 1px solid #3a3d47; background: #1a1d27; color: #888; cursor: pointer; font-size: 0.8rem;">Username &amp; Password</button>
       </div>
-      <div class="form-group">
-        <label for="ig-password">Password</label>
-        <input type="password" id="ig-password" placeholder="your_password" autocomplete="current-password">
+      <div id="login-session" class="login-panel">
+        <div class="form-group">
+          <label for="ig-username-session">Instagram username</label>
+          <input type="text" id="ig-username-session" placeholder="your_username">
+        </div>
+        <div class="form-group" style="margin-top: 0.5rem;">
+          <label for="ig-session-file">Session file</label>
+          <input type="file" id="ig-session-file" style="font-size: 0.85rem;">
+        </div>
+        <p style="font-size: 0.75rem; color: #666; margin-top: 0.4rem;">
+          Create a session file on your computer:<br>
+          <code style="background: #0f1117; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">pip install instaloader && instaloader --login YOUR_USERNAME</code><br>
+          Then upload the file from <code style="background: #0f1117; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.75rem;">~/.config/instaloader/session-USERNAME</code>
+        </p>
+      </div>
+      <div id="login-password" class="login-panel" style="display: none;">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="ig-username">Instagram username</label>
+            <input type="text" id="ig-username" placeholder="your_username" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="ig-password">Password</label>
+            <input type="password" id="ig-password" placeholder="your_password" autocomplete="current-password">
+          </div>
+        </div>
+        <p style="font-size: 0.75rem; color: #666; margin-top: 0.2rem;">May trigger a checkpoint. Use a throwaway account if preferred.</p>
       </div>
     </div>
-    <p style="font-size: 0.75rem; color: #666; margin-top: 0.2rem;">Used only to create an Instagram session. Not stored. Use a throwaway account if preferred.</p>
   </details>
   <div style="text-align: center; margin-top: 1rem;">
     <button class="btn primary" id="download-btn">Download &amp; Analyze</button>
@@ -294,6 +317,20 @@ function hideProgress() {
 // ============================================================
 // DOWNLOAD TAB: Fetch from Instagram via backend API
 // ============================================================
+// Login tab switching
+document.querySelectorAll(".login-tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".login-tab").forEach(t => {
+      t.style.background = "#1a1d27"; t.style.color = "#888";
+      t.classList.remove("active");
+    });
+    tab.style.background = "#3a3d47"; tab.style.color = "#fff";
+    tab.classList.add("active");
+    document.getElementById("login-session").style.display = tab.dataset.login === "session" ? "block" : "none";
+    document.getElementById("login-password").style.display = tab.dataset.login === "password" ? "block" : "none";
+  });
+});
+
 // Auto-expand login section when user types #
 document.getElementById("profile-input").addEventListener("input", (e) => {
   if (e.target.value.trim().startsWith("#")) {
@@ -301,13 +338,54 @@ document.getElementById("profile-input").addEventListener("input", (e) => {
   }
 });
 
+// Upload session file to server
+let sessionUploaded = false;
+let sessionUsername = "";
+
+async function uploadSessionFile() {
+  const fileInput = document.getElementById("ig-session-file");
+  const username = document.getElementById("ig-username-session").value.trim();
+  if (!fileInput.files[0] || !username) return false;
+
+  const formData = new FormData();
+  formData.append("session_file", fileInput.files[0]);
+  formData.append("username", username);
+
+  statusEl.textContent = "Uploading session file...";
+  try {
+    const resp = await fetch(API_BASE + "/api/upload-session", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await resp.json();
+    if (data.error) {
+      statusEl.textContent = `Session upload failed: ${data.error}`;
+      statusEl.className = "status error";
+      return false;
+    }
+    sessionUploaded = true;
+    sessionUsername = username;
+    return true;
+  } catch (e) {
+    statusEl.textContent = `Session upload failed: ${e.message}`;
+    statusEl.className = "status error";
+    return false;
+  }
+}
+
 downloadBtn.addEventListener("click", async () => {
   const profile = document.getElementById("profile-input").value.trim();
   const startDate = document.getElementById("start-date-input").value;
   const endDate = document.getElementById("end-date-input").value;
   const maxPosts = parseInt(document.getElementById("max-posts-input").value) || 100;
+
+  // Determine login method
+  const activeLoginTab = document.querySelector(".login-tab.active");
+  const loginMethod = activeLoginTab ? activeLoginTab.dataset.login : "session";
   const igUsername = document.getElementById("ig-username").value.trim();
   const igPassword = document.getElementById("ig-password").value;
+  const sessionFileInput = document.getElementById("ig-session-file");
+  const sessionFileUsername = document.getElementById("ig-username-session").value.trim();
 
   if (!profile || !startDate || !endDate) {
     statusEl.textContent = "Please fill in all fields.";
@@ -315,11 +393,23 @@ downloadBtn.addEventListener("click", async () => {
     return;
   }
 
-  if (profile.startsWith("#") && (!igUsername || !igPassword)) {
-    statusEl.textContent = "Instagram login is required for hashtag scraping. Enter username and password.";
-    statusEl.className = "status error";
-    document.getElementById("login-section").open = true;
-    return;
+  // Check login for hashtag scraping
+  if (profile.startsWith("#")) {
+    if (loginMethod === "session") {
+      if (!sessionFileUsername || !sessionFileInput.files[0]) {
+        statusEl.textContent = "Upload a session file and enter your username for hashtag scraping.";
+        statusEl.className = "status error";
+        document.getElementById("login-section").open = true;
+        return;
+      }
+    } else {
+      if (!igUsername || !igPassword) {
+        statusEl.textContent = "Enter Instagram username and password for hashtag scraping.";
+        statusEl.className = "status error";
+        document.getElementById("login-section").open = true;
+        return;
+      }
+    }
   }
 
   downloadBtn.disabled = true;
@@ -327,15 +417,24 @@ downloadBtn.addEventListener("click", async () => {
   statusEl.className = "status";
   showIndeterminate();
 
+  // Upload session file if needed
+  if (loginMethod === "session" && sessionFileInput.files[0] && sessionFileUsername) {
+    const ok = await uploadSessionFile();
+    if (!ok) { downloadBtn.disabled = false; return; }
+  }
+
   const payload = {
     profile: profile,
     start_date: startDate,
     end_date: endDate,
     max_posts: maxPosts,
   };
-  if (igUsername && igPassword) {
+  if (loginMethod === "password" && igUsername && igPassword) {
     payload.ig_username = igUsername;
     payload.ig_password = igPassword;
+  } else if (sessionUploaded && sessionUsername) {
+    payload.use_session = true;
+    payload.ig_username = sessionUsername;
   }
 
   try {

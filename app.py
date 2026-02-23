@@ -24,6 +24,10 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 DURA_DIR = DOWNLOADS_DIR / "dura_bulk"
 NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
 
+# Session files directory
+SESSIONS_DIR = BASE_DIR / "sessions"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
 # Ensure output dirs exist
 DURA_DIR.mkdir(parents=True, exist_ok=True)
 NON_DURA_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,7 +67,7 @@ def fuzzy_match_dura_bulk(text):
     return False
 
 
-def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False, ig_username="", ig_password=""):
+def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False, ig_username="", ig_password="", use_session=False):
     """Background pipeline: scrape profile/hashtag → detect boats → OCR → sort."""
     job = jobs[job_id]
 
@@ -84,8 +88,23 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
             post_metadata_txt_pattern="",
         )
 
-        # Login if credentials provided (required for hashtag scraping)
-        if ig_username and ig_password:
+        # Authenticate: session file or username/password
+        if use_session and ig_username:
+            session_path = SESSIONS_DIR / f"session-{ig_username}"
+            if session_path.exists():
+                try:
+                    job["detail"] = f"Loading session for @{ig_username}..."
+                    L.load_session_from_file(ig_username, str(session_path))
+                    job["detail"] = f"Session loaded. Fetching posts from {label}..."
+                except Exception as e:
+                    job["step"] = "error"
+                    job["detail"] = f"Session file invalid or expired: {e}"
+                    return
+            else:
+                job["step"] = "error"
+                job["detail"] = f"No session file found for @{ig_username}. Please upload one."
+                return
+        elif ig_username and ig_password:
             try:
                 job["detail"] = f"Logging in as @{ig_username}..."
                 L.login(ig_username, ig_password)
@@ -336,6 +355,22 @@ def index():
     return send_file("index.html")
 
 
+@app.route("/api/upload-session", methods=["POST"])
+def upload_session():
+    """Receive an instaloader session file upload."""
+    username = request.form.get("username", "").strip()
+    session_file = request.files.get("session_file")
+
+    if not username or not session_file:
+        return jsonify({"error": "Username and session file are required"}), 400
+
+    # Save session file
+    session_path = SESSIONS_DIR / f"session-{username}"
+    session_file.save(str(session_path))
+
+    return jsonify({"ok": True, "username": username})
+
+
 @app.route("/api/scrape", methods=["POST"])
 def start_scrape():
     data = request.json
@@ -345,6 +380,7 @@ def start_scrape():
     max_posts = int(data.get("max_posts", 100))
     ig_username = data.get("ig_username", "").strip()
     ig_password = data.get("ig_password", "")
+    use_session = data.get("use_session", False)
 
     if not raw_input or not start_date or not end_date:
         return jsonify({"error": "Missing required fields"}), 400
@@ -356,7 +392,7 @@ def start_scrape():
     if not name:
         return jsonify({"error": "Missing required fields"}), 400
 
-    if is_hashtag and (not ig_username or not ig_password):
+    if is_hashtag and not use_session and (not ig_username or not ig_password):
         return jsonify({"error": "Instagram login required for hashtag scraping"}), 400
 
     job_id = str(uuid.uuid4())[:8]
@@ -370,7 +406,7 @@ def start_scrape():
 
     thread = threading.Thread(
         target=run_pipeline,
-        args=(job_id, name, start_date, end_date, max_posts, is_hashtag, ig_username, ig_password),
+        args=(job_id, name, start_date, end_date, max_posts, is_hashtag, ig_username, ig_password, use_session),
     )
     thread.daemon = True
     thread.start()
