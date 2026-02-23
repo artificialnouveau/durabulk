@@ -117,20 +117,35 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
 
         job["detail"] = f"Downloading images from {label}..."
 
+        # Collect all items first to inspect structure
+        all_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        job["detail"] = f"Got {len(all_items)} items from Apify. Processing..."
+
+        if all_items:
+            first = all_items[0]
+            job["debug_keys"] = list(first.keys())
+            print(f"[DEBUG] {len(all_items)} items. First item keys: {list(first.keys())}", flush=True)
+            # Log a sample of values for key fields
+            for key in ["type", "displayUrl", "imageUrl", "url", "display_url", "timestamp", "shortCode"]:
+                val = first.get(key)
+                if val:
+                    print(f"[DEBUG] first['{key}'] = {str(val)[:200]}", flush=True)
+        else:
+            print(f"[DEBUG] Dataset returned 0 items!", flush=True)
+            job["step"] = "done"
+            job["detail"] = "Apify returned 0 items from dataset."
+            job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
+            return
+
         items_seen = 0
         skipped_date = 0
         skipped_video = 0
         skipped_no_url = 0
 
-        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+        for item in all_items:
             items_seen += 1
             if count >= max_posts:
                 break
-
-            # Log first item's keys for debugging
-            if items_seen == 1:
-                print(f"[DEBUG] First item keys: {list(item.keys())}", flush=True)
-                print(f"[DEBUG] First item type: {item.get('type')}", flush=True)
 
             # Filter by date if timestamp available
             timestamp = item.get("timestamp")
@@ -160,16 +175,14 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 # Try first image in carousel
                 images = item.get("images") or item.get("childPosts") or []
                 if images:
-                    first = images[0]
-                    if isinstance(first, str):
-                        image_url = first
-                    elif isinstance(first, dict):
-                        image_url = first.get("url", "") or first.get("displayUrl", "") or first.get("imageUrl", "")
+                    first_img = images[0]
+                    if isinstance(first_img, str):
+                        image_url = first_img
+                    elif isinstance(first_img, dict):
+                        image_url = first_img.get("url", "") or first_img.get("displayUrl", "") or first_img.get("imageUrl", "")
 
             if not image_url:
                 skipped_no_url += 1
-                if items_seen <= 3:
-                    print(f"[DEBUG] Item {items_seen} has no image URL. Keys: {list(item.keys())}", flush=True)
                 continue
 
             # Build filename: YYYYMMDD_profilename_NNN.jpg
@@ -198,6 +211,7 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 continue
 
         print(f"[DEBUG] Items seen: {items_seen}, downloaded: {count}, skipped_date: {skipped_date}, skipped_video: {skipped_video}, skipped_no_url: {skipped_no_url}", flush=True)
+        job["debug_stats"] = f"seen:{items_seen} dl:{count} skip_date:{skipped_date} skip_vid:{skipped_video} skip_nourl:{skipped_no_url}"
 
         job["total"] = len(image_paths)
         job["current"] = 0
@@ -205,7 +219,7 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
 
         if not image_paths:
             job["step"] = "done"
-            job["detail"] = "No images found for this profile/date range."
+            job["detail"] = f"No images downloaded. {items_seen} items from Apify: {skipped_date} filtered by date, {skipped_video} videos, {skipped_no_url} had no image URL."
             job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
             return
 
