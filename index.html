@@ -32,6 +32,15 @@
     height: 100%; background: #4a90d9; border-radius: 4px;
     transition: width 0.3s; width: 0%;
   }
+  .progress-wrap.indeterminate .progress-bar {
+    width: 30% !important;
+    animation: indeterminate 1.5s ease-in-out infinite;
+  }
+  @keyframes indeterminate {
+    0% { margin-left: 0%; }
+    50% { margin-left: 70%; }
+    100% { margin-left: 0%; }
+  }
 
   /* Tabs */
   .tabs {
@@ -267,11 +276,18 @@ function openLightbox(src) {
 
 function showProgress(frac) {
   progressWrap.classList.remove("hidden");
+  progressWrap.classList.remove("indeterminate");
   progressBar.style.width = (frac * 100).toFixed(1) + "%";
+}
+
+function showIndeterminate() {
+  progressWrap.classList.remove("hidden");
+  progressWrap.classList.add("indeterminate");
 }
 
 function hideProgress() {
   progressWrap.classList.add("hidden");
+  progressWrap.classList.remove("indeterminate");
   progressBar.style.width = "0%";
 }
 
@@ -309,7 +325,7 @@ downloadBtn.addEventListener("click", async () => {
   downloadBtn.disabled = true;
   statusEl.textContent = "Connecting to server...";
   statusEl.className = "status";
-  showProgress(0.01);
+  showIndeterminate();
 
   const payload = {
     profile: profile,
@@ -375,9 +391,7 @@ function pollBackendJob(jobId) {
       if (job.total > 0 && job.current > 0) {
         showProgress(job.current / job.total);
       } else if (job.step === "scraping" || job.step === "queued") {
-        // Pulse the progress bar during scraping to show activity
-        const pulse = (Date.now() % 3000) / 3000;
-        showProgress(0.02 + pulse * 0.15);
+        showIndeterminate();
       }
 
       // Render new images as they arrive
