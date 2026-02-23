@@ -28,8 +28,9 @@ NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
 SESSIONS_DIR = BASE_DIR / "sessions"
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Default shared Instagram session
-DEFAULT_IG_USERNAME = os.environ.get("IG_USERNAME", "schipschipschip")
+# Default shared Instagram credentials (set via Render environment variables)
+DEFAULT_IG_USERNAME = os.environ.get("IG_USERNAME", "")
+DEFAULT_IG_PASSWORD = os.environ.get("IG_PASSWORD", "")
 
 # Ensure output dirs exist
 DURA_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,14 +109,30 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
                 job["detail"] = f"No session file found for @{ig_username}. Please upload one."
                 return
         elif ig_username and ig_password:
-            try:
-                job["detail"] = f"Logging in as @{ig_username}..."
-                L.login(ig_username, ig_password)
-                job["detail"] = f"Logged in. Fetching posts from {label}..."
-            except Exception as e:
-                job["step"] = "error"
-                job["detail"] = f"Instagram login failed: {e}"
-                return
+            # Try cached session first to avoid repeated logins
+            cached_session = SESSIONS_DIR / f"session-{ig_username}"
+            if cached_session.exists():
+                try:
+                    job["detail"] = f"Loading cached session for @{ig_username}..."
+                    L.load_session_from_file(ig_username, str(cached_session))
+                    job["detail"] = f"Session loaded. Fetching posts from {label}..."
+                except Exception:
+                    # Cached session failed, fall through to fresh login
+                    pass
+            if not L.context.is_logged_in:
+                try:
+                    job["detail"] = f"Logging in as @{ig_username}..."
+                    L.login(ig_username, ig_password)
+                    # Save session for future requests
+                    try:
+                        L.save_session_to_file(str(cached_session))
+                    except Exception:
+                        pass
+                    job["detail"] = f"Logged in. Fetching posts from {label}..."
+                except Exception as e:
+                    job["step"] = "error"
+                    job["detail"] = f"Instagram login failed: {e}"
+                    return
 
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -395,14 +412,19 @@ def start_scrape():
     if not name:
         return jsonify({"error": "Missing required fields"}), 400
 
-    # Auto-use default shared session if no credentials provided
+    # Auto-use default shared credentials if no login provided
     if not use_session and not ig_password:
-        default_session = SESSIONS_DIR / f"session-{DEFAULT_IG_USERNAME}"
-        if default_session.exists():
+        # First try session file on disk
+        default_session = SESSIONS_DIR / f"session-{DEFAULT_IG_USERNAME}" if DEFAULT_IG_USERNAME else None
+        if default_session and default_session.exists():
             use_session = True
             ig_username = DEFAULT_IG_USERNAME
+        # Then try env var credentials
+        elif DEFAULT_IG_USERNAME and DEFAULT_IG_PASSWORD:
+            ig_username = DEFAULT_IG_USERNAME
+            ig_password = DEFAULT_IG_PASSWORD
         elif is_hashtag:
-            return jsonify({"error": "No Instagram session available. Upload a session file."}), 400
+            return jsonify({"error": "No Instagram credentials configured. Contact the admin or use your own login."}), 400
 
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
