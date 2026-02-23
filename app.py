@@ -63,7 +63,7 @@ def fuzzy_match_dura_bulk(text):
     return False
 
 
-def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False):
+def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False, ig_username="", ig_password=""):
     """Background pipeline: scrape profile/hashtag → detect boats → OCR → sort."""
     job = jobs[job_id]
 
@@ -83,6 +83,17 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
             compress_json=False,
             post_metadata_txt_pattern="",
         )
+
+        # Login if credentials provided (required for hashtag scraping)
+        if ig_username and ig_password:
+            try:
+                job["detail"] = f"Logging in as @{ig_username}..."
+                L.login(ig_username, ig_password)
+                job["detail"] = f"Logged in. Fetching posts from {label}..."
+            except Exception as e:
+                job["step"] = "error"
+                job["detail"] = f"Instagram login failed: {e}"
+                return
 
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -332,6 +343,8 @@ def start_scrape():
     start_date = data.get("start_date", "")
     end_date = data.get("end_date", "")
     max_posts = int(data.get("max_posts", 100))
+    ig_username = data.get("ig_username", "").strip()
+    ig_password = data.get("ig_password", "")
 
     if not raw_input or not start_date or not end_date:
         return jsonify({"error": "Missing required fields"}), 400
@@ -343,6 +356,9 @@ def start_scrape():
     if not name:
         return jsonify({"error": "Missing required fields"}), 400
 
+    if is_hashtag and (not ig_username or not ig_password):
+        return jsonify({"error": "Instagram login required for hashtag scraping"}), 400
+
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {
         "step": "queued",
@@ -353,7 +369,8 @@ def start_scrape():
     }
 
     thread = threading.Thread(
-        target=run_pipeline, args=(job_id, name, start_date, end_date, max_posts, is_hashtag)
+        target=run_pipeline,
+        args=(job_id, name, start_date, end_date, max_posts, is_hashtag, ig_username, ig_password),
     )
     thread.daemon = True
     thread.start()
