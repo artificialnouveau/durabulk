@@ -3,6 +3,7 @@ services:
     name: dura-bulk-detector
     runtime: python
     buildCommand: pip install -r requirements.txt
+    plan: free
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300
     envVars:
       - key: PYTHON_VERSION
