@@ -277,8 +277,9 @@ downloadBtn.addEventListener("click", async () => {
   }
 
   downloadBtn.disabled = true;
-  statusEl.textContent = "Starting download...";
+  statusEl.textContent = "Connecting to server...";
   statusEl.className = "status";
+  showProgress(0.01);
 
   try {
     const resp = await fetch(API_BASE + "/api/scrape", {
@@ -332,11 +333,15 @@ function pollBackendJob(jobId) {
       const resp = await fetch(API_BASE + `/api/status/${jobId}`);
       const job = await resp.json();
 
-      statusEl.textContent = job.detail || job.step;
+      statusEl.textContent = job.detail || job.step || "Working...";
       statusEl.className = "status";
 
       if (job.total > 0 && job.current > 0) {
         showProgress(job.current / job.total);
+      } else if (job.step === "scraping" || job.step === "queued") {
+        // Pulse the progress bar during scraping to show activity
+        const pulse = (Date.now() % 3000) / 3000;
+        showProgress(0.02 + pulse * 0.15);
       }
 
       // Render new images as they arrive

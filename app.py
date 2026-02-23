@@ -87,14 +87,19 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
         image_paths = []
+        job["total"] = max_posts
+        job["current"] = 0
         try:
             profile = instaloader.Profile.from_username(L.context, profile_name)
             count = 0
+            skipped = 0
             for post in profile.get_posts():
                 if count >= max_posts:
                     break
                 post_date = post.date_utc
                 if post_date.date() > end_dt.date():
+                    skipped += 1
+                    job["detail"] = f"Scanning posts from @{profile_name}... ({skipped} skipped, {count} downloaded)"
                     continue
                 if post_date.date() < start_dt.date():
                     break
@@ -114,7 +119,8 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
                         shutil.move(filepath + ".jpg", filepath)
                         image_paths.append(Path(filepath))
                     count += 1
-                    job["detail"] = f"Downloaded {count} images from @{profile_name}..."
+                    job["current"] = count
+                    job["detail"] = f"Downloading from @{profile_name}: {count} of ~{max_posts} images..."
                 except Exception:
                     continue
 
@@ -124,7 +130,8 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
             return
 
         job["total"] = len(image_paths)
-        job["detail"] = f"Found {len(image_paths)} images"
+        job["current"] = 0
+        job["detail"] = f"Downloaded {len(image_paths)} images. Starting analysis..."
 
         if not image_paths:
             job["step"] = "done"
