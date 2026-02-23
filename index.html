@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dura Bulk Detector</title>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -241,7 +239,6 @@ const lightboxImg = document.getElementById("lightbox-img");
 const dlDura = document.getElementById("dl-dura");
 const dlNonDura = document.getElementById("dl-non-dura");
 
-let cocoModel = null;
 let ocrWorker = null;
 let allImages = []; // { img, src, name }
 
@@ -341,7 +338,7 @@ function pollBackendJob(jobId) {
   duraCountEl.textContent = "0";
   nonDuraCountEl.textContent = "0";
   resultsSummary.textContent = "Analyzing...";
-  resultsSource.textContent = "Source: server-side analysis (YOLOv8 + EasyOCR)";
+  resultsSource.textContent = "Source: server-side analysis (EasyOCR)";
   resultsSection.style.display = "block";
   dlDura.style.display = "none";
   dlNonDura.style.display = "none";
@@ -428,7 +425,7 @@ function displayBackendResults(results) {
   nonDuraCountEl.textContent = nonDuraFiles.length;
   resultsSummary.textContent =
     `${duraFiles.length + nonDuraFiles.length} images: ${duraFiles.length} with "Dura Bulk", ${nonDuraFiles.length} other.`;
-  resultsSource.textContent = "Source: server-side analysis (YOLOv8 + EasyOCR)";
+  resultsSource.textContent = "Source: server-side analysis (EasyOCR)";
 
   duraFiles.forEach(name => {
     const img = document.createElement("img");
@@ -476,7 +473,7 @@ function displayPrecomputedResults(results) {
   nonDuraCountEl.textContent = nonDuraEntries.length;
   resultsSummary.textContent =
     `${entries.length} images: ${duraEntries.length} with "Dura Bulk", ${nonDuraEntries.length} other.`;
-  resultsSource.textContent = "Source: pre-computed results (YOLOv8 + EasyOCR)";
+  resultsSource.textContent = "Source: pre-computed results";
 
   duraEntries.forEach(([name]) => {
     const img = document.createElement("img");
@@ -506,15 +503,12 @@ function displayPrecomputedResults(results) {
   resultsSection.style.display = "block";
 }
 
-// --- Load models ---
+// --- Load OCR engine ---
 async function loadModels() {
-  statusEl.textContent = "Loading COCO-SSD model...";
-  cocoModel = await cocoSsd.load();
-
   statusEl.textContent = "Loading OCR engine...";
   ocrWorker = await Tesseract.createWorker("eng");
 
-  statusEl.textContent = "Models ready.";
+  statusEl.textContent = "OCR engine ready.";
   statusEl.classList.add("ready");
 }
 
@@ -616,17 +610,25 @@ async function addFiles(files) {
   analyzeBtn.disabled = false;
 }
 
-// --- Fuzzy match ---
+// --- Fuzzy match (supports partial/obscured letters) ---
 function fuzzyMatchDuraBulk(text) {
   const lower = text.toLowerCase().trim();
   if (lower.includes("dura") && lower.includes("bulk")) return true;
   const cleaned = lower.replace(/[^a-z0-9]/g, "");
-  return cleaned.includes("durabulk");
+  if (cleaned.includes("durabulk")) return true;
+  // Check for partial matches (4+ char substrings of "durabulk")
+  const target = "durabulk";
+  for (let len = 4; len <= target.length; len++) {
+    for (let start = 0; start <= target.length - len; start++) {
+      if (cleaned.includes(target.substring(start, start + len))) return true;
+    }
+  }
+  return false;
 }
 
-// --- Analyze all images in browser ---
+// --- Analyze all images in browser (OCR only, no boat detection) ---
 async function analyzeAll() {
-  if (!cocoModel || allImages.length === 0) return;
+  if (!ocrWorker || allImages.length === 0) return;
 
   analyzeBtn.disabled = true;
   resultsSection.style.display = "none";
@@ -640,35 +642,16 @@ async function analyzeAll() {
 
   for (let i = 0; i < allImages.length; i++) {
     const entry = allImages[i];
-    statusEl.textContent = `[${i + 1}/${allImages.length}] Detecting objects in ${entry.name}...`;
+    statusEl.textContent = `[${i + 1}/${allImages.length}] OCR on ${entry.name}...`;
     statusEl.className = "status";
 
-    const predictions = await cocoModel.detect(entry.img);
-    const boats = predictions.filter(p => p.class === "boat");
-
     let isDura = false;
-
-    for (const boat of boats) {
-      const [x, y, w, h] = boat.bbox;
-
-      const cropCanvas = document.createElement("canvas");
-      cropCanvas.width = w;
-      cropCanvas.height = h;
-      const cropCtx = cropCanvas.getContext("2d");
-      cropCtx.drawImage(entry.img, x, y, w, h, 0, 0, w, h);
-
-      statusEl.textContent = `[${i + 1}/${allImages.length}] OCR on boat in ${entry.name}...`;
-
-      try {
-        const { data } = await ocrWorker.recognize(cropCanvas);
-        const ocrText = data.text || "";
-        if (fuzzyMatchDuraBulk(ocrText)) {
-          isDura = true;
-          break;
-        }
-      } catch {
-        // OCR failed, skip
-      }
+    try {
+      const { data } = await ocrWorker.recognize(entry.img);
+      const ocrText = data.text || "";
+      isDura = fuzzyMatchDuraBulk(ocrText);
+    } catch {
+      // OCR failed
     }
 
     if (isDura) {
@@ -686,7 +669,7 @@ async function analyzeAll() {
   nonDuraCountEl.textContent = nonDuraResults.length;
   resultsSummary.textContent =
     `${allImages.length} images: ${duraResults.length} with "Dura Bulk", ${nonDuraResults.length} other.`;
-  resultsSource.textContent = "Source: browser analysis (COCO-SSD + Tesseract.js)";
+  resultsSource.textContent = "Source: browser analysis (Tesseract.js OCR)";
 
   duraResults.forEach(entry => {
     const img = document.createElement("img");

@@ -14,7 +14,6 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
 from PIL import Image
 from apify_client import ApifyClient
-from ultralytics import YOLO
 import easyocr
 
 app = Flask(__name__)
@@ -35,16 +34,8 @@ NON_DURA_DIR.mkdir(parents=True, exist_ok=True)
 # In-memory job store
 jobs = {}
 
-# Lazy-loaded models
-_yolo_model = None
+# Lazy-loaded OCR reader
 _ocr_reader = None
-
-
-def get_yolo():
-    global _yolo_model
-    if _yolo_model is None:
-        _yolo_model = YOLO("yolov8n.pt")
-    return _yolo_model
 
 
 def get_ocr():
@@ -55,20 +46,33 @@ def get_ocr():
 
 
 def fuzzy_match_dura_bulk(text):
-    """Check if text contains something close to 'dura bulk'."""
+    """Check if text contains 'dura bulk' or partial matches.
+
+    Handles obscured letters by checking for substrings of 'durabulk'
+    that are at least 4 characters long.
+    """
     text = text.lower().strip()
-    # Direct substring check
+    cleaned = re.sub(r"[^a-z0-9]", "", text)
+
+    # Check for full words
     if "dura" in text and "bulk" in text:
         return True
-    # Check with spaces/punctuation removed
-    cleaned = re.sub(r"[^a-z0-9]", "", text)
     if "durabulk" in cleaned:
         return True
+
+    # Check for partial matches (4+ char substrings of "durabulk")
+    target = "durabulk"
+    for length in range(4, len(target) + 1):
+        for start in range(len(target) - length + 1):
+            substring = target[start:start + length]
+            if substring in cleaned:
+                return True
+
     return False
 
 
 def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=False):
-    """Background pipeline: scrape via Apify → detect boats → OCR → sort."""
+    """Background pipeline: scrape via Apify → OCR → sort."""
     job = jobs[job_id]
 
     try:
@@ -115,23 +119,11 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
         image_paths = []
         count = 0
 
-        job["detail"] = f"Downloading images from {label}..."
-
-        # Collect all items first to inspect structure
+        # Collect all items first
         all_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-        job["detail"] = f"Got {len(all_items)} items from Apify. Processing..."
+        job["detail"] = f"Got {len(all_items)} items from Apify. Downloading..."
 
-        if all_items:
-            first = all_items[0]
-            job["debug_keys"] = list(first.keys())
-            print(f"[DEBUG] {len(all_items)} items. First item keys: {list(first.keys())}", flush=True)
-            # Log a sample of values for key fields
-            for key in ["type", "displayUrl", "imageUrl", "url", "display_url", "timestamp", "shortCode"]:
-                val = first.get(key)
-                if val:
-                    print(f"[DEBUG] first['{key}'] = {str(val)[:200]}", flush=True)
-        else:
-            print(f"[DEBUG] Dataset returned 0 items!", flush=True)
+        if not all_items:
             job["step"] = "done"
             job["detail"] = "Apify returned 0 items from dataset."
             job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
@@ -210,12 +202,9 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
             except Exception:
                 continue
 
-        print(f"[DEBUG] Items seen: {items_seen}, downloaded: {count}, skipped_date: {skipped_date}, skipped_video: {skipped_video}, skipped_no_url: {skipped_no_url}", flush=True)
-        job["debug_stats"] = f"seen:{items_seen} dl:{count} skip_date:{skipped_date} skip_vid:{skipped_video} skip_nourl:{skipped_no_url}"
-
         job["total"] = len(image_paths)
         job["current"] = 0
-        job["detail"] = f"Downloaded {len(image_paths)} images. Starting analysis..."
+        job["detail"] = f"Downloaded {len(image_paths)} images. Starting OCR analysis..."
 
         if not image_paths:
             job["step"] = "done"
@@ -223,9 +212,8 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
             job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
             return
 
-        # --- Step 2 & 3: Detect boats + OCR ---
+        # --- Step 2: OCR on full images (no boat detection needed) ---
         job["step"] = "detecting"
-        model = get_yolo()
         reader = get_ocr()
 
         dura_files = []
@@ -234,44 +222,14 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
 
         for i, img_path in enumerate(image_paths):
             job["current"] = i + 1
-            job["detail"] = f"Processing image {i + 1}/{len(image_paths)}"
+            job["detail"] = f"OCR on image {i + 1}/{len(image_paths)}"
 
             try:
-                img = Image.open(img_path).convert("RGB")
+                ocr_results = reader.readtext(str(img_path))
+                all_text = " ".join([r[1] for r in ocr_results])
+                is_dura = fuzzy_match_dura_bulk(all_text)
             except Exception:
-                continue
-
-            # YOLO detection
-            results = model(img, verbose=False)
-            is_dura = False
-
-            for result in results:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id != 8:  # 8 = boat in COCO
-                        continue
-
-                    # Crop boat region
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    crop = img.crop((x1, y1, x2, y2))
-
-                    # OCR on crop
-                    crop_path = str(img_path) + "_crop.jpg"
-                    crop.save(crop_path)
-                    try:
-                        ocr_results = reader.readtext(crop_path)
-                        all_text = " ".join([r[1] for r in ocr_results])
-                        if fuzzy_match_dura_bulk(all_text):
-                            is_dura = True
-                            break
-                    except Exception:
-                        pass
-                    finally:
-                        if os.path.exists(crop_path):
-                            os.remove(crop_path)
-
-                if is_dura:
-                    break
+                is_dura = False
 
             # Sort image
             dest_dir = DURA_DIR if is_dura else NON_DURA_DIR
@@ -288,7 +246,7 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
         # Cleanup temp dir
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        # --- Step 4: Done ---
+        # --- Done ---
         job["step"] = "done"
         job["detail"] = (
             f"Done! {len(dura_files)} Dura Bulk, {len(non_dura_files)} other."
@@ -304,7 +262,7 @@ def run_pipeline(job_id, name, start_date, end_date, max_posts=100, is_hashtag=F
 
 
 def run_upload_pipeline(job_id, tmp_dir):
-    """Pipeline for uploaded images: detect boats → OCR → sort."""
+    """Pipeline for uploaded images: OCR → sort."""
     job = jobs[job_id]
 
     try:
@@ -323,7 +281,6 @@ def run_upload_pipeline(job_id, tmp_dir):
             job["results"] = {"dura_bulk": [], "non_dura_bulk": []}
             return
 
-        model = get_yolo()
         reader = get_ocr()
 
         dura_files = []
@@ -332,41 +289,14 @@ def run_upload_pipeline(job_id, tmp_dir):
 
         for i, img_path in enumerate(image_paths):
             job["current"] = i + 1
-            job["detail"] = f"Processing image {i + 1}/{len(image_paths)}"
+            job["detail"] = f"OCR on image {i + 1}/{len(image_paths)}"
 
             try:
-                img = Image.open(img_path).convert("RGB")
+                ocr_results = reader.readtext(str(img_path))
+                all_text = " ".join([r[1] for r in ocr_results])
+                is_dura = fuzzy_match_dura_bulk(all_text)
             except Exception:
-                continue
-
-            results = model(img, verbose=False)
-            is_dura = False
-
-            for result in results:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id != 8:
-                        continue
-
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    crop = img.crop((x1, y1, x2, y2))
-
-                    crop_path = str(img_path) + "_crop.jpg"
-                    crop.save(crop_path)
-                    try:
-                        ocr_results = reader.readtext(crop_path)
-                        all_text = " ".join([r[1] for r in ocr_results])
-                        if fuzzy_match_dura_bulk(all_text):
-                            is_dura = True
-                            break
-                    except Exception:
-                        pass
-                    finally:
-                        if os.path.exists(crop_path):
-                            os.remove(crop_path)
-
-                if is_dura:
-                    break
+                is_dura = False
 
             dest_dir = DURA_DIR if is_dura else NON_DURA_DIR
             dest_name = f"upload_{i:04d}{img_path.suffix}"
