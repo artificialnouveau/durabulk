@@ -27,6 +27,11 @@ NON_DURA_DIR = DOWNLOADS_DIR / "non_dura_bulk"
 # Apify API token (set via Render environment variables)
 APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 
+# EasyOCR model directory (ensure it's writable on Render)
+EASYOCR_DIR = BASE_DIR / ".easyocr"
+EASYOCR_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["EASYOCR_MODULE_PATH"] = str(EASYOCR_DIR)
+
 # Ensure output dirs exist
 DURA_DIR.mkdir(parents=True, exist_ok=True)
 NON_DURA_DIR.mkdir(parents=True, exist_ok=True)
