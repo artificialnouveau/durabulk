@@ -139,6 +139,7 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
 
         dura_files = []
         non_dura_files = []
+        job["partial_results"] = {"dura_bulk": [], "non_dura_bulk": []}
 
         for i, img_path in enumerate(image_paths):
             job["current"] = i + 1
@@ -188,8 +189,10 @@ def run_pipeline(job_id, profile_name, start_date, end_date, max_posts=100):
 
             if is_dura:
                 dura_files.append(dest_name)
+                job["partial_results"]["dura_bulk"].append(dest_name)
             else:
                 non_dura_files.append(dest_name)
+                job["partial_results"]["non_dura_bulk"].append(dest_name)
 
         # Cleanup temp dir
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -234,6 +237,7 @@ def run_upload_pipeline(job_id, tmp_dir):
 
         dura_files = []
         non_dura_files = []
+        job["partial_results"] = {"dura_bulk": [], "non_dura_bulk": []}
 
         for i, img_path in enumerate(image_paths):
             job["current"] = i + 1
@@ -279,8 +283,10 @@ def run_upload_pipeline(job_id, tmp_dir):
 
             if is_dura:
                 dura_files.append(dest_name)
+                job["partial_results"]["dura_bulk"].append(dest_name)
             else:
                 non_dura_files.append(dest_name)
+                job["partial_results"]["non_dura_bulk"].append(dest_name)
 
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
