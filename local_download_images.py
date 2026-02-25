@@ -52,18 +52,37 @@ def main():
         post_metadata_txt_pattern="",
     )
 
+    if is_hashtag and not args.login:
+        print("Error: hashtag scraping requires a login. Either:")
+        print(f"  1. Set the env var:  export INSTA_USERNAME=your_username")
+        print(f"  2. Pass --login:     python3 local_download_images.py \"#{name}\" --login YOUR_USERNAME")
+        return
+
     if args.login:
-        L.load_session_from_file(args.login)
-        print(f"Loaded session for @{args.login}")
+        try:
+            L.load_session_from_file(args.login)
+        except FileNotFoundError:
+            print(f"ERROR: No session file found for '{args.login}'.")
+            print(f"You need to create one first by running:\n")
+            print(f"  python3 -m instaloader --login {args.login}\n")
+            print(f"This will ask for your password and save a session file.")
+            return
+        # Verify the session is still valid
+        try:
+            test_user = L.test_login()
+            if test_user:
+                print(f"Logged in as @{test_user}")
+            else:
+                print(f"WARNING: Session for '{args.login}' has expired.")
+                print(f"Please create a new one by running:\n")
+                print(f"  python3 -m instaloader --login {args.login}\n")
+                return
+        except Exception:
+            print(f"WARNING: Could not verify session for '{args.login}'. Continuing anyway...")
 
     count = 0
 
     if is_hashtag:
-        if not args.login:
-            print("Error: hashtag scraping requires a login. Either:")
-            print(f"  1. Set the env var:  export INSTA_USERNAME=your_username")
-            print(f"  2. Pass --login:     python3 local_download_images.py \"#{name}\" --login YOUR_USERNAME")
-            return
         print(f"Fetching posts from #{name}...")
         hashtag = instaloader.Hashtag.from_name(L.context, name)
         posts = hashtag.get_posts()
