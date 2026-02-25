@@ -81,8 +81,8 @@ python3 local_download_images.py durabulk
 # Download up to 50 images from a profile, within a date range
 python3 local_download_images.py durabulk --start 2025-01-01 --end 2025-06-30 --max 50
 
-# Download from a hashtag (requires login — see below)
-python3 local_download_images.py "#durabulk" --login your_username --max 50
+# Download from a hashtag (requires login — see "Hashtag downloads" below)
+python3 local_download_images.py "#durabulk" --max 50
 ```
 
 On Windows, use `python` instead of `python3`.
@@ -95,10 +95,35 @@ Instagram requires a login to search hashtags. First, create a session:
 
 ```
 pip3 install instaloader
-instaloader --login your_username
+python3 -m instaloader --login your_username
 ```
 
-Enter your password when prompted. Then use `--login your_username` when running the download script.
+> **Note:** Use `python3 -m instaloader` instead of `instaloader` directly — on many systems (especially macOS), `pip3` installs the CLI script to a directory that is not on your `PATH`, so the terminal will say "command not found".
+
+Enter your password when prompted.
+
+#### Save your username (so you don't need `--login` every time)
+
+**Option 1 — Set it for this terminal session:**
+
+```
+export INSTA_USERNAME=your_username
+```
+
+**Option 2 — Set it permanently (add to your shell profile):**
+
+```
+echo 'export INSTA_USERNAME=your_username' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Then you can just run:
+
+```
+python3 local_download_images.py "#durabulk" --max 50
+```
+
+The `--login` flag still works if you ever need to override it.
 
 ### Step 5: Analyze the images
 

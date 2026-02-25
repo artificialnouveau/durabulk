@@ -2,10 +2,15 @@
 Download Instagram images locally using instaloader.
 
 Usage:
+    # Set your username so you don't have to pass --login every time:
+    export INSTA_USERNAME=your_username  # add to ~/.zshrc to persist
+
     python local_download_images.py durabulk
     python local_download_images.py durabulk --start 2025-01-01 --end 2025-12-31
     python local_download_images.py "#durabulk" --max 50
-    python local_download_images.py durabulk --login your_username
+
+    # Or pass --login explicitly to override:
+    python local_download_images.py "#durabulk" --login OTHER_USERNAME --max 50
 
 Images are saved to ./images/ as YYYYMMDD_profilename_NNN.jpg
 """
@@ -24,7 +29,7 @@ def main():
     parser.add_argument("--start", default="2020-01-01", help="Start date YYYY-MM-DD (default: 2020-01-01)")
     parser.add_argument("--end", default=datetime.now().strftime("%Y-%m-%d"), help="End date YYYY-MM-DD (default: today)")
     parser.add_argument("--max", type=int, default=100, help="Max images to download (default: 100)")
-    parser.add_argument("--login", default=None, help="Instagram username for login (needed for hashtags)")
+    parser.add_argument("--login", default=os.environ.get("INSTA_USERNAME"), help="Instagram username (default: $INSTA_USERNAME env var)")
     parser.add_argument("--output", default="images", help="Output directory (default: images)")
     args = parser.parse_args()
 
@@ -55,9 +60,9 @@ def main():
 
     if is_hashtag:
         if not args.login:
-            print("Error: hashtag scraping requires --login. Run:")
-            print(f"  instaloader --login YOUR_USERNAME")
-            print(f"  python local_download_images.py \"#{name}\" --login YOUR_USERNAME")
+            print("Error: hashtag scraping requires a login. Either:")
+            print(f"  1. Set the env var:  export INSTA_USERNAME=your_username")
+            print(f"  2. Pass --login:     python3 local_download_images.py \"#{name}\" --login YOUR_USERNAME")
             return
         print(f"Fetching posts from #{name}...")
         hashtag = instaloader.Hashtag.from_name(L.context, name)
